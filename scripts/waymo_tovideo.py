@@ -1,10 +1,9 @@
 import re
+import os
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 
-INPUT_DIR = "/path/to/your/waymo/frames"  # 修改为你的图片目录
-OUTPUT_DIR = "/path/to/your/output/videos"  # 修改为你的输出目录
 FPS = 10
 CODEC = "mp4v"
 EXTS = ["jpg", "jpeg", "png"]
@@ -93,12 +92,12 @@ def write_videos_with_imageio(groups: Dict[int, List[Tuple[int, Path]]], out_dir
             print(f"[失败] 视角 {view}: {e}")
 
 
-def main():
-    input_dir = Path(INPUT_DIR).expanduser().resolve()
+def main(input_dir, output_dir):
+    input_dir = Path(input_dir).expanduser().resolve()
     if not input_dir.exists():
         print("输入目录不存在")
         return
-    output_dir = Path(OUTPUT_DIR).expanduser().resolve()
+    output_dir = Path(output_dir).expanduser().resolve()
     exts = [e.strip(".").lower() for e in EXTS if str(e).strip()]
     pattern = re.compile(PATTERN)
     imgs = list_images(input_dir, exts)
@@ -127,4 +126,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+
+    ROOT_DIR = "/path/to/folder_of_folders"           # 父目录（包含多个子文件夹）
+    OUTPUT_ROOT = "/path/to/output"                    # 输出根目录
+
+    root_path = Path(ROOT_DIR).expanduser().resolve()
+    out_root = Path(OUTPUT_ROOT).expanduser().resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    subfolders = sorted([p for p in root_path.iterdir() if p.is_dir()])
+    if not subfolders:
+        print("未找到子目录")
+    for sub in subfolders:
+        print(f"[处理] 子目录: {sub.name}")
+        main(sub, out_root / sub.name)
