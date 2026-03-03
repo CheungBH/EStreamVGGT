@@ -44,6 +44,9 @@ def export_frame_folders(groups: Dict[int, List[Tuple[int, Path]]], out_root: Pa
     out_root.mkdir(parents=True, exist_ok=True)
     for view, frames in sorted(groups.items()):
         view_dir = out_root / f"{tag}_view{view}"
+        if view_dir.exists():
+            print(f"{view_dir} skipped")
+            continue
         imgs_dir = view_dir / "imgs"
         imgs_dir.mkdir(parents=True, exist_ok=True)
         (view_dir / "fps.txt").write_text(str(fps))
@@ -91,4 +94,3 @@ if __name__ == "__main__":
     for sub in subfolders:
         print(sub.name)
         main(sub, out_root)
-
