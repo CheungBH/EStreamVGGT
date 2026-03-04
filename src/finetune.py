@@ -81,7 +81,7 @@ def setup_for_distributed(accelerator: Accelerator):
 
 def save_current_code(outdir):
     now = datetime.datetime.now()  # current date and time
-    date_time = now.strftime("%m_%d-%H:%M:%S")
+    date_time = now.strftime("%m_%d_%H_%M_%S")
     src_dir = "."
     dst_dir = os.path.join(outdir, "code", "{}".format(date_time))
     shutil.copytree(
