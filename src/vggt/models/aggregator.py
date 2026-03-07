@@ -200,7 +200,7 @@ class Aggregator(nn.Module):
         """
         B, S, C_in, H, W = images.shape
         # Normalize images and reshape for patch embed
-        images = (images - self._resnet_mean.to(images.device)) / self._resnet_std.to(images.device)
+        images = (images - self._resnet_mean.to(device=images.device, dtype=images.dtype)) / self._resnet_std.to(device=images.device, dtype=images.dtype)
 
         # Reshape to [B*S, C, H, W] for patch embedding
         images = images.reshape(B * S, C_in, H, W)
