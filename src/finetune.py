@@ -572,6 +572,16 @@ def train_one_epoch(
                         "train" + "/" + name, imgs_stacked, step, dataformats="HWC"
                     )
                 del batch
+            del loss_details
+            del result
+            if (data_iter_step + 1) % (accum_iter * args.print_freq) == 0:
+                try:
+                    mem_alloc = torch.cuda.memory_allocated(device) / (1024**2)
+                    mem_rsrv = torch.cuda.memory_reserved(device) / (1024**2)
+                    printer.info(f"[mem] alloc={mem_alloc:.1f}MB reserved={mem_rsrv:.1f}MB")
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
 
         if (
             data_iter_step % int(args.save_freq * len(data_loader)) == 0
