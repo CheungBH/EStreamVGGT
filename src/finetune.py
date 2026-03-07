@@ -464,9 +464,13 @@ def train_one_epoch(
             # change the range of the image to [0, 1]
             if isinstance(batch, dict) and "img" in batch:
                 batch["img"] = (batch["img"] + 1.0) / 2.0
+                model_dtype = next(model.parameters()).dtype
+                batch["img"] = batch["img"].to(model_dtype)
             elif isinstance(batch, list) and all(isinstance(v, dict) and "img" in v for v in batch):
                 for view in batch:
                     view["img"] = (view["img"] + 1.0) / 2.0
+                    model_dtype = next(model.parameters()).dtype
+                    view["img"] = view["img"].to(model_dtype)
 
             epoch_f = epoch + data_iter_step / len(data_loader)
             # we use a per iteration (instead of per epoch) lr scheduler
@@ -631,6 +635,13 @@ def test_one_epoch(
     for _, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, accelerator, header)
     ):
+        if isinstance(batch, dict) and "img" in batch:
+            model_dtype = next(model.parameters()).dtype
+            batch["img"] = batch["img"].to(model_dtype)
+        elif isinstance(batch, list) and all(isinstance(v, dict) and "img" in v for v in batch):
+            model_dtype = next(model.parameters()).dtype
+            for view in batch:
+                view["img"] = view["img"].to(model_dtype)
         result = loss_of_one_batch(
             batch,
             model,
