@@ -316,29 +316,31 @@ def train(args):
                 save_model(epoch - 1, "last", best_so_far, args.start_step)
 
         new_best = False
-        # if epoch > 0 and args.eval_freq > 0 and epoch % args.eval_freq == 0:
-        #     test_stats = {}
-        #     for test_name, testset in data_loader_test.items():
-        #         stats = test_one_epoch(
-        #             model,
-        #             teacher,
-        #             test_criterion,
-        #             testset,
-        #             accelerator,
-        #             device,
-        #             epoch,
-        #             log_writer=log_writer,
-        #             args=args,
-        #             prefix=test_name,
-        #         )
-        #         test_stats[test_name] = stats
-        #
-        #         # Save best of all
-        #         if stats["loss_med"] < best_so_far:
-        #             best_so_far = stats["loss_med"]
-        #             new_best = True
-        # # Save more stuff
-        # write_log_stats(epoch, train_stats, test_stats)
+        eval_every = getattr(args, "eval_every", None)
+        if eval_every is None:
+            eval_every = getattr(args, "eval_freq", 0)
+        if epoch > 0 and eval_every > 0 and epoch % eval_every == 0:
+            test_stats = {}
+            for test_name, testset in data_loader_test.items():
+                stats = test_one_epoch(
+                    model,
+                    None,
+                    test_criterion,
+                    testset,
+                    accelerator,
+                    device,
+                    epoch,
+                    args=args,
+                    log_writer=log_writer,
+                    prefix=test_name,
+                )
+                test_stats[test_name] = stats
+                if "loss_med" in stats and stats["loss_med"] < best_so_far:
+                    best_so_far = stats["loss_med"]
+                    new_best = True
+            write_log_stats(epoch, train_stats, test_stats)
+        else:
+            write_log_stats(epoch, train_stats, {})
 
         if epoch > args.start_epoch:
             if args.keep_freq and epoch % args.keep_freq == 0:
