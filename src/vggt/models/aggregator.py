@@ -204,6 +204,8 @@ class Aggregator(nn.Module):
 
         # Reshape to [B*S, C, H, W] for patch embedding
         images = images.reshape(B * S, C_in, H, W)
+        target_dtype = next(self.patch_embed.parameters()).dtype
+        images = images.to(target_dtype)
         patch_tokens = self.patch_embed(images)
 
         if isinstance(patch_tokens, dict):
