@@ -486,6 +486,11 @@ def train_one_epoch(
                         if isinstance(x, np.ndarray):
                             x = torch.from_numpy(x)
                         view["depthmap"] = x.to(device=device, dtype=model_dtype)
+                    if "pts3d" in view:
+                        x = view["pts3d"]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        view["pts3d"] = x.to(device=device, dtype=model_dtype)
                     for k in ("valid_mask", "sky_mask", "img_mask", "ray_mask"):
                         if k in view:
                             x = view[k]
@@ -679,6 +684,11 @@ def test_one_epoch(
                     if isinstance(x, np.ndarray):
                         x = torch.from_numpy(x)
                     view["depthmap"] = x.to(device=device, dtype=model_dtype)
+                if "pts3d" in view:
+                    x = view["pts3d"]
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    view["pts3d"] = x.to(device=device, dtype=model_dtype)
                 for k in ("valid_mask", "sky_mask", "img_mask", "ray_mask"):
                     if k in view:
                         x = view[k]
