@@ -866,11 +866,14 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
     else:
         stride = 1
     for i in range(0, num_views, stride):
-        gt_imgs = 0.5 * (loss_details[f"gt_img{i+1}"] + 1)[:num_imgs_vis].detach().cpu()
+        gt_key = f"gt_img{i+1}"
+        gt_imgs = 0.5 * (loss_details[gt_key] + 1)[:num_imgs_vis].detach().cpu()
         width = gt_imgs.shape[2]
-        pred_imgs = (
-            0.5 * (loss_details[f"pred_rgb_{i+1}"] + 1)[:num_imgs_vis].detach().cpu()
-        )
+        pred_key = f"pred_rgb_{i+1}"
+        if pred_key in loss_details:
+            pred_imgs = 0.5 * (loss_details[pred_key] + 1)[:num_imgs_vis].detach().cpu()
+        else:
+            pred_imgs = gt_imgs
         gt_img_list = batch_append(gt_img_list, gt_imgs.unbind(dim=0))
         pred_img_list = batch_append(pred_img_list, pred_imgs.unbind(dim=0))
 
