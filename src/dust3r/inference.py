@@ -88,7 +88,7 @@ def loss_of_one_batch(
     else: 
         query_pts = None
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
-    with torch.cuda.amp.autocast(dtype=dtype):
+    with torch.amp.autocast("cuda", dtype=dtype):
         if inference:
             with torch.no_grad():
                 output = model.inference(batch, query_pts)
