@@ -471,6 +471,28 @@ def train_one_epoch(
                     view["img"] = (view["img"] + 1.0) / 2.0
                     model_dtype = next(model.parameters()).dtype
                     view["img"] = view["img"].to(device=device, dtype=model_dtype)
+                    if "camera_pose" in view:
+                        x = view["camera_pose"]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        view["camera_pose"] = x.to(device=device, dtype=model_dtype)
+                    if "camera_intrinsics" in view:
+                        x = view["camera_intrinsics"]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        view["camera_intrinsics"] = x.to(device=device, dtype=model_dtype)
+                    if "depthmap" in view:
+                        x = view["depthmap"]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        view["depthmap"] = x.to(device=device, dtype=model_dtype)
+                    for k in ("valid_mask", "sky_mask", "img_mask", "ray_mask"):
+                        if k in view:
+                            x = view[k]
+                            if isinstance(x, np.ndarray):
+                                x = torch.from_numpy(x)
+                            if isinstance(x, torch.Tensor):
+                                view[k] = x.to(device=device, dtype=torch.bool)
 
             epoch_f = epoch + data_iter_step / len(data_loader)
             # we use a per iteration (instead of per epoch) lr scheduler
@@ -642,6 +664,28 @@ def test_one_epoch(
             model_dtype = next(model.parameters()).dtype
             for view in batch:
                 view["img"] = view["img"].to(device=device, dtype=model_dtype)
+                if "camera_pose" in view:
+                    x = view["camera_pose"]
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    view["camera_pose"] = x.to(device=device, dtype=model_dtype)
+                if "camera_intrinsics" in view:
+                    x = view["camera_intrinsics"]
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    view["camera_intrinsics"] = x.to(device=device, dtype=model_dtype)
+                if "depthmap" in view:
+                    x = view["depthmap"]
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    view["depthmap"] = x.to(device=device, dtype=model_dtype)
+                for k in ("valid_mask", "sky_mask", "img_mask", "ray_mask"):
+                    if k in view:
+                        x = view[k]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        if isinstance(x, torch.Tensor):
+                            view[k] = x.to(device=device, dtype=torch.bool)
         result = loss_of_one_batch(
             batch,
             model,
