@@ -316,7 +316,7 @@ def train(args):
                 save_model(epoch - 1, "last", best_so_far, args.start_step)
 
         new_best = False
-        eval_every = getattr(args, "eval_every", None)
+        eval_every = 1
         if eval_every is None:
             eval_every = getattr(args, "eval_freq", 0)
         if epoch > 0 and eval_every > 0 and epoch % eval_every == 0:
