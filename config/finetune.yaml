@@ -1,10 +1,10 @@
-pretrained: ../ckpt/model.pt
+pretrained: /home/bhzhang/Documents/src/StreamVGGT/checkpoints/model.pt
 load_only_encoder: False
 long_context: False
 fixed_length: True
 resume: Null
 benchmark: False
-num_views : 2
+num_views : 3
 num_test_views : 4
 n_corres_train: 0
 n_corres_test: 0
@@ -14,12 +14,30 @@ test_criterion: Regr3DPose(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_va
 
 allow_repeat: False
 
-dataset_example: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="../data/processed_stream_sample/train", modality=${modality},
+
+dataset1: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/home/bhzhang/Documents/datasets/waymo/processed_stream_sample/train", modality=${modality},
   aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+#dataset1: Co3d_Multi(allow_repeat=${allow_repeat}, split='train', ROOT='/home/bhzhang/Documents/datasets/co3d/co3d_subset_processed',
+#  aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],
+#  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+#dataset2: WildRGBD_Multi(allow_repeat=${allow_repeat}, split='train', ROOT="../data/train/wildrgbd",
+#  aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],
+#  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+#dataset3: ARKitScenes_Multi(allow_repeat=${allow_repeat}, split='train', ROOT='../data/train/processed_arkitscenes/',
+#  aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],
+#  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 
-train_dataset: 5000 @ ${dataset_example}
-test_dataset: 5000 @ ${dataset_example}
+dataset_train: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/media/bhzhang/ACER/dataset/waymo_sample_processed_stream/training", modality=${modality},
+  aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],  
+  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+dataset_test: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/media/bhzhang/ACER/dataset/waymo_sample_processed_stream/validation", modality=${modality},
+  aug_crop=16, resolution=[(518, 336)],  
+  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+
+train_dataset: 4500 @ ${dataset_train}
+test_dataset: 4500 @ ${dataset_test}
+#test_dataset: 1000 @ ARKitScenes_Multi(split='test', ROOT='/home/bhzhang/Documents/datasets/ARKitScenes/preprocessed_stream', resolution=(518, 392), num_views=${num_test_views}, seed=42, n_corres=${n_corres_test})
 
 modality: "rgb"
 
@@ -36,7 +54,7 @@ min_lr: 1e-7
 warmup_epochs: 0.5
 amp: 1
 
-num_workers: 0
+num_workers: 12
 world_size: 1
 local-rank: -1
 dist_url: 'env://'
@@ -52,8 +70,8 @@ keep_freq: 1
 print_freq: 10
 print_img_freq: 50000000
 num_imgs_vis: 4
-save_dir: '../checkpoints'
-exp_name: 'vggt_finetune'
+save_dir: '/media/bhzhang/ACER/checkpoints/estream_ckpt_eval'
+exp_name: 'finetune_waymo_sample'
 task: 'VGGT'
 logdir: ${save_dir}/${exp_name}/logs
 output_dir: ${save_dir}/${exp_name}/
