@@ -955,4 +955,16 @@ def run(cfg: OmegaConf):
 
 
 if __name__ == "__main__":
+    def _rewrite_hydra_args(argv):
+        out = [argv[0]]
+        i = 1
+        while i < len(argv):
+            if argv[i] == "--modality" and i + 1 < len(argv):
+                out.append(f"modality={argv[i+1]}")
+                i += 2
+                continue
+            out.append(argv[i])
+            i += 1
+        return out
+    sys.argv = _rewrite_hydra_args(sys.argv)
     run()

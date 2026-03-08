@@ -4,7 +4,7 @@ long_context: False
 fixed_length: True
 resume: Null
 benchmark: False
-num_views : 10
+num_views : 2
 num_test_views : 4
 n_corres_train: 0
 n_corres_test: 0
@@ -14,12 +14,14 @@ test_criterion: Regr3DPose(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_va
 
 allow_repeat: False
 
-dataset_example: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="../data/processed_stream_sample/train", 
+dataset_example: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="../data/processed_stream_sample/train", modality=${modality},
   aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 
 train_dataset: 5000 @ ${dataset_example}
 test_dataset: 5000 @ ${dataset_example}
+
+modality: "rgb"
 
 seed: 0
 batch_size: 1

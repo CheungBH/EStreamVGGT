@@ -12,7 +12,7 @@ from dust3r.utils.image import imread_cv2
 class Waymo_Multi(BaseMultiViewDataset):
     """Dataset of outdoor street scenes, 5 images each time"""
 
-    def __init__(self, *args, ROOT, modality="rgb", event_dir=None, event_suffix=None, event_exts=(".png", ".jpg", ".jpeg"), **kwargs):
+    def __init__(self, *args, ROOT, modality="rgb", event_dir=None, event_suffix="_event", event_exts=(".png", ".jpg", ".jpeg"), **kwargs):
         self.ROOT = ROOT
         self.max_interval = 8
         self.video = True
