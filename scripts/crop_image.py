@@ -25,7 +25,7 @@ def main():
     root = Path(INPUT_DIR).expanduser().resolve()
     for dirpath, _, filenames in os.walk(root):
         for fname in filenames:
-            if fname in ("4_event.png", "5_event.png"):
+            if fname.endswith(("4_event.png", "5_event.png")):
                 p = Path(dirpath) / fname
                 try:
                     save_cropped(p)
