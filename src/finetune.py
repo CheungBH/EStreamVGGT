@@ -735,16 +735,16 @@ def test_one_epoch(
             loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
             loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()
 
-        imgs_stacked_dict = get_vis_imgs_new(
-            loss_details,
-            args.num_imgs_vis,
-            args.num_test_views,
-            is_metric=batch[0]["is_metric"],
-        )
-        for name, imgs_stacked in imgs_stacked_dict.items():
-            log_writer.add_images(
-                prefix + "/" + name, imgs_stacked, 1000 * epoch, dataformats="HWC"
-            )
+        # imgs_stacked_dict = get_vis_imgs_new(
+        #     loss_details,
+        #     args.num_imgs_vis,
+        #     args.num_test_views,
+        #     is_metric=batch[0]["is_metric"],
+        # )
+        # for name, imgs_stacked in imgs_stacked_dict.items():
+        #     log_writer.add_images(
+        #         prefix + "/" + name, imgs_stacked, 1000 * epoch, dataformats="HWC"
+        #     )
 
     del loss_details, loss_value, batch
     torch.cuda.empty_cache()
