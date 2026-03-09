@@ -23,7 +23,9 @@ from dust3r.utils.camera import (
     camera_to_pose_encoding,
     relative_pose_absT_quatR,
 )
-
+import sys
+sys.path.append("vggt")
+from utils.pose_enc import extri_intri_to_pose_encoding
 
 
 def Sum(*losses_and_masks):
@@ -1187,9 +1189,9 @@ class CameraLoss(nn.Module):
         loss_R = (pred_pose[..., 3:7] - gt_pose[..., 3:7]).abs()
         loss_FL = (pred_pose[..., 7:] - gt_pose[..., 7:]).abs()
 
-        loss_T = check_and_fix_inf_nan(loss_T, "loss_T")
-        loss_R = check_and_fix_inf_nan(loss_R, "loss_R")
-        loss_FL = check_and_fix_inf_nan(loss_FL, "loss_FL")
+        # loss_T = check_and_fix_inf_nan(loss_T, "loss_T")
+        # loss_R = check_and_fix_inf_nan(loss_R, "loss_R")
+        # loss_FL = check_and_fix_inf_nan(loss_FL, "loss_FL")
 
         # Clamp outlier translation loss to prevent instability, then average
         loss_T = loss_T.clamp(max=100).mean()

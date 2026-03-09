@@ -81,7 +81,7 @@ def setup_for_distributed(accelerator: Accelerator):
 
 def save_current_code(outdir):
     now = datetime.datetime.now()  # current date and time
-    date_time = now.strftime("%m_%d-%H:%M:%S")
+    date_time = now.strftime("%m_%d_%H_%M_%S")
     src_dir = "."
     dst_dir = os.path.join(outdir, "code", "{}".format(date_time))
     shutil.copytree(
@@ -316,29 +316,31 @@ def train(args):
                 save_model(epoch - 1, "last", best_so_far, args.start_step)
 
         new_best = False
-        # if epoch > 0 and args.eval_freq > 0 and epoch % args.eval_freq == 0:
-        #     test_stats = {}
-        #     for test_name, testset in data_loader_test.items():
-        #         stats = test_one_epoch(
-        #             model,
-        #             teacher,
-        #             test_criterion,
-        #             testset,
-        #             accelerator,
-        #             device,
-        #             epoch,
-        #             log_writer=log_writer,
-        #             args=args,
-        #             prefix=test_name,
-        #         )
-        #         test_stats[test_name] = stats
-        #
-        #         # Save best of all
-        #         if stats["loss_med"] < best_so_far:
-        #             best_so_far = stats["loss_med"]
-        #             new_best = True
-        # # Save more stuff
-        # write_log_stats(epoch, train_stats, test_stats)
+        eval_every = getattr(args, "eval_every", None)
+        if eval_every is None:
+            eval_every = getattr(args, "eval_freq", 0)
+        if epoch > 0 and eval_every > 0 and epoch % eval_every == 0:
+            test_stats = {}
+            for test_name, testset in data_loader_test.items():
+                stats = test_one_epoch(
+                    model,
+                    None,
+                    test_criterion,
+                    testset,
+                    accelerator,
+                    device,
+                    epoch,
+                    args=args,
+                    log_writer=log_writer,
+                    prefix=test_name,
+                )
+                test_stats[test_name] = stats
+                if "loss_med" in stats and stats["loss_med"] < best_so_far:
+                    best_so_far = stats["loss_med"]
+                    new_best = True
+            write_log_stats(epoch, train_stats, test_stats)
+        else:
+            write_log_stats(epoch, train_stats, {})
 
         if epoch > args.start_epoch:
             if args.keep_freq and epoch % args.keep_freq == 0:
@@ -462,9 +464,40 @@ def train_one_epoch(
             # change the range of the image to [0, 1]
             if isinstance(batch, dict) and "img" in batch:
                 batch["img"] = (batch["img"] + 1.0) / 2.0
+                model_dtype = next(model.parameters()).dtype
+                batch["img"] = batch["img"].to(device=device, dtype=model_dtype)
             elif isinstance(batch, list) and all(isinstance(v, dict) and "img" in v for v in batch):
                 for view in batch:
                     view["img"] = (view["img"] + 1.0) / 2.0
+                    model_dtype = next(model.parameters()).dtype
+                    view["img"] = view["img"].to(device=device, dtype=model_dtype)
+                    if "camera_pose" in view:
+                        x = view["camera_pose"]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        view["camera_pose"] = x.to(device=device, dtype=model_dtype)
+                    if "camera_intrinsics" in view:
+                        x = view["camera_intrinsics"]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        view["camera_intrinsics"] = x.to(device=device, dtype=model_dtype)
+                    if "depthmap" in view:
+                        x = view["depthmap"]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        view["depthmap"] = x.to(device=device, dtype=model_dtype)
+                    if "pts3d" in view:
+                        x = view["pts3d"]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        view["pts3d"] = x.to(device=device, dtype=model_dtype)
+                    for k in ("valid_mask", "sky_mask", "img_mask", "ray_mask"):
+                        if k in view:
+                            x = view[k]
+                            if isinstance(x, np.ndarray):
+                                x = torch.from_numpy(x)
+                            if isinstance(x, torch.Tensor):
+                                view[k] = x.to(device=device, dtype=torch.bool)
 
             epoch_f = epoch + data_iter_step / len(data_loader)
             # we use a per iteration (instead of per epoch) lr scheduler
@@ -570,6 +603,16 @@ def train_one_epoch(
                         "train" + "/" + name, imgs_stacked, step, dataformats="HWC"
                     )
                 del batch
+            del loss_details
+            del result
+            if (data_iter_step + 1) % (accum_iter * args.print_freq) == 0:
+                try:
+                    mem_alloc = torch.cuda.memory_allocated(device) / (1024**2)
+                    mem_rsrv = torch.cuda.memory_reserved(device) / (1024**2)
+                    printer.info(f"[mem] alloc={mem_alloc:.1f}MB reserved={mem_rsrv:.1f}MB")
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
 
         if (
             data_iter_step % int(args.save_freq * len(data_loader)) == 0
@@ -619,6 +662,40 @@ def test_one_epoch(
     for _, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, accelerator, header)
     ):
+        if isinstance(batch, dict) and "img" in batch:
+            model_dtype = next(model.parameters()).dtype
+            batch["img"] = batch["img"].to(device=device, dtype=model_dtype)
+        elif isinstance(batch, list) and all(isinstance(v, dict) and "img" in v for v in batch):
+            model_dtype = next(model.parameters()).dtype
+            for view in batch:
+                view["img"] = view["img"].to(device=device, dtype=model_dtype)
+                if "camera_pose" in view:
+                    x = view["camera_pose"]
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    view["camera_pose"] = x.to(device=device, dtype=model_dtype)
+                if "camera_intrinsics" in view:
+                    x = view["camera_intrinsics"]
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    view["camera_intrinsics"] = x.to(device=device, dtype=model_dtype)
+                if "depthmap" in view:
+                    x = view["depthmap"]
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    view["depthmap"] = x.to(device=device, dtype=model_dtype)
+                if "pts3d" in view:
+                    x = view["pts3d"]
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    view["pts3d"] = x.to(device=device, dtype=model_dtype)
+                for k in ("valid_mask", "sky_mask", "img_mask", "ray_mask"):
+                    if k in view:
+                        x = view[k]
+                        if isinstance(x, np.ndarray):
+                            x = torch.from_numpy(x)
+                        if isinstance(x, torch.Tensor):
+                            view[k] = x.to(device=device, dtype=torch.bool)
         result = loss_of_one_batch(
             batch,
             model,
@@ -789,11 +866,14 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
     else:
         stride = 1
     for i in range(0, num_views, stride):
-        gt_imgs = 0.5 * (loss_details[f"gt_img{i+1}"] + 1)[:num_imgs_vis].detach().cpu()
+        gt_key = f"gt_img{i+1}"
+        gt_imgs = 0.5 * (loss_details[gt_key] + 1)[:num_imgs_vis].detach().cpu()
         width = gt_imgs.shape[2]
-        pred_imgs = (
-            0.5 * (loss_details[f"pred_rgb_{i+1}"] + 1)[:num_imgs_vis].detach().cpu()
-        )
+        pred_key = f"pred_rgb_{i+1}"
+        if pred_key in loss_details:
+            pred_imgs = 0.5 * (loss_details[pred_key] + 1)[:num_imgs_vis].detach().cpu()
+        else:
+            pred_imgs = gt_imgs
         gt_img_list = batch_append(gt_img_list, gt_imgs.unbind(dim=0))
         pred_img_list = batch_append(pred_img_list, pred_imgs.unbind(dim=0))
 
@@ -878,4 +958,16 @@ def run(cfg: OmegaConf):
 
 
 if __name__ == "__main__":
+    def _rewrite_hydra_args(argv):
+        out = [argv[0]]
+        i = 1
+        while i < len(argv):
+            if argv[i] == "--modality" and i + 1 < len(argv):
+                out.append(f"modality={argv[i+1]}")
+                i += 2
+                continue
+            out.append(argv[i])
+            i += 1
+        return out
+    sys.argv = _rewrite_hydra_args(sys.argv)
     run()

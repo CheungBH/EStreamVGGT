@@ -199,8 +199,13 @@ class Aggregator(nn.Module):
                 and the patch_start_idx indicating where patch tokens begin.
         """
         B, S, C_in, H, W = images.shape
-        # Normalize images and reshape for patch embed
-        images = (images - self._resnet_mean.to(images.device)) / self._resnet_std.to(images.device)
+        target_dtype = (
+            next(self.patch_embed.patch_embed.parameters()).dtype
+            if hasattr(self.patch_embed, "patch_embed")
+            else next(self.patch_embed.parameters()).dtype
+        )
+        images = images.to(target_dtype)
+        images = (images - self._resnet_mean.to(device=images.device, dtype=target_dtype)) / self._resnet_std.to(device=images.device, dtype=target_dtype)
 
         # Reshape to [B*S, C, H, W] for patch embedding
         images = images.reshape(B * S, C_in, H, W)
