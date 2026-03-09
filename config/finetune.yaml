@@ -28,10 +28,10 @@ dataset_example: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="../
 #  aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],
 #  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 
-dataset_train: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/media/bhzhang/ACER/dataset/waymo_sample_processed_stream/training", modality=${modality},
+dataset_train: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/media/bhzhang/ACER/dataset/waymo_sample_processed_stream/training", modality="${modality}",
   aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
-dataset_test: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/media/bhzhang/ACER/dataset/waymo_sample_processed_stream/validation", modality=${modality},
+dataset_test: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/media/bhzhang/ACER/dataset/waymo_sample_processed_stream/validation", modality="${modality}",
   aug_crop=16, resolution=[(518, 336)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 
