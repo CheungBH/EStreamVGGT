@@ -420,6 +420,7 @@ def train_one_epoch(
     assert torch.backends.cuda.matmul.allow_tf32 == True
 
     model.train(True)
+    device = accelerator.device
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", misc.SmoothedValue(window_size=1, fmt="{value:.6f}"))
     header = "Epoch: [{}]".format(epoch)
