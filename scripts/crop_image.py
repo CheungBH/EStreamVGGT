@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import imageio.v2 as iio
 import numpy as np
 
@@ -22,15 +23,14 @@ def save_cropped(src: Path):
 
 def main():
     root = Path(INPUT_DIR).expanduser().resolve()
-    targets = list(root.rglob("4_event.png")) + list(root.rglob("5_event.png"))
-    if not targets:
-        print("未找到目标文件")
-        return
-    for p in sorted(targets):
-        try:
-            save_cropped(p)
-        except Exception as e:
-            print(f"失败: {p} -> {e}")
+    for dirpath, _, filenames in os.walk(root):
+        for fname in filenames:
+            if fname in ("4_event.png", "5_event.png"):
+                p = Path(dirpath) / fname
+                try:
+                    save_cropped(p)
+                except Exception as e:
+                    print(f"失败: {p} -> {e}")
 
 if __name__ == "__main__":
     main()
