@@ -30,7 +30,7 @@ dataset8: BlendedMVS_Multi(allow_repeat=${allow_repeat}, split='train', ROOT="..
 dataset9: MegaDepth_Multi(allow_repeat=${allow_repeat}, split="train", ROOT="../data/train/processed_megadepth", 
   aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
-dataset10: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="../data/train/waymo/", modality=${modality}, 
+dataset10: Waymo_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="../data/train/waymo/", modality="${modality}", 
   aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 dataset11: VirtualKITTI2_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="../data/train/processed_vkitti", 
