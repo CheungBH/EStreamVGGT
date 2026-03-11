@@ -731,7 +731,7 @@ def test_one_epoch(
         metric_logger.update(loss=float(loss_value), **loss_details)
 
         if isinstance(batch, list):
-            preds = result.get("pred", {})
+            preds = result.get("pred", [])
             depth_absrels = []
             depth_rmses = []
             depth_log_rmses = []
@@ -746,22 +746,28 @@ def test_one_epoch(
             conf_means = []
             track_conf_means = []
             track_vis_ratios = []
-            pr_depth = preds.get("depth", None)
-            pr_pose = preds.get("camera_pose", None)
-            pr_pts3d = preds.get("pts3d_in_other_view", None)
-            pr_conf = preds.get("conf", None)
             for vi, view in enumerate(batch):
+                pred_vi = None
+                if isinstance(preds, list) and len(preds) > vi:
+                    pred_vi = preds[vi]
+                elif isinstance(preds, dict):
+                    pred_vi = preds
                 gt_depth = view.get("depthmap", None)
                 mask = view.get("ray_mask", None)
                 if mask is None:
                     mask = view.get("valid_mask", None)
+                if pred_vi is not None:
+                    pr_depth = pred_vi.get("depth", None)
+                else:
+                    pr_depth = None
                 if gt_depth is not None and isinstance(gt_depth, torch.Tensor) and pr_depth is not None and isinstance(pr_depth, torch.Tensor):
-                    if pr_depth.ndim == 4 and pr_depth.shape[1] > vi:
-                        pd = pr_depth[:, vi]
-                    else:
-                        pd = pr_depth
-                    if pd.shape[-2:] == gt_depth.shape[-2:]:
-                        g = gt_depth
+                    pd = pr_depth
+                    g = gt_depth
+                    if pd.ndim == 4 and pd.shape[-1] == 1:
+                        pd = pd.squeeze(-1)
+                    if g.ndim == 4 and g.shape[-1] == 1:
+                        g = g.squeeze(-1)
+                    if pd.shape[-2:] == g.shape[-2:]:
                         if mask is not None and isinstance(mask, torch.Tensor) and mask.shape[-2:] == g.shape[-2:]:
                             m = mask
                         else:
@@ -791,33 +797,31 @@ def test_one_epoch(
                         depth_delta_1252s.append(d1252)
                         depth_delta_1253s.append(d1253)
                 gt_pose = view.get("camera_pose", None)
+                pr_pose = pred_vi.get("camera_pose", None) if pred_vi is not None else None
                 if gt_pose is not None and isinstance(gt_pose, torch.Tensor) and pr_pose is not None and isinstance(pr_pose, torch.Tensor):
-                    if pr_pose.ndim == 4 and pr_pose.shape[1] > vi:
-                        pp = pr_pose[:, vi]
-                    else:
-                        pp = pr_pose
                     gp = gt_pose
-                    Rp = pp[:, :3, :3]
-                    Rg = gp[:, :3, :3]
-                    Rrel = Rp @ Rg.transpose(1, 2)
-                    tr = Rrel[:, 0, 0] + Rrel[:, 1, 1] + Rrel[:, 2, 2]
-                    val = torch.clamp((tr - 1) / 2, -1.0, 1.0)
-                    ang = torch.rad2deg(torch.acos(val)).mean().item()
-                    tp = pp[:, :3, 3]
-                    tg = gp[:, :3, 3]
-                    terr = torch.linalg.norm(tp - tg, dim=1).mean().item()
-                    pose_rot_degs.append(ang)
-                    pose_trans_errs.append(terr)
+                    pp = pr_pose
+                    # only compute when predicted pose is a matrix
+                    if pp.ndim == 3 and pp.shape[-2:] == (3, 4):
+                        Rp = pp[:, :3, :3]
+                        Rg = gp[:, :3, :3]
+                        Rrel = Rp @ Rg.transpose(1, 2)
+                        tr = Rrel[:, 0, 0] + Rrel[:, 1, 1] + Rrel[:, 2, 2]
+                        val = torch.clamp((tr - 1) / 2, -1.0, 1.0)
+                        ang = torch.rad2deg(torch.acos(val)).mean().item()
+                        tp = pp[:, :3, 3]
+                        tg = gp[:, :3, 3]
+                        terr = torch.linalg.norm(tp - tg, dim=1).mean().item()
+                        pose_rot_degs.append(ang)
+                        pose_trans_errs.append(terr)
+                pr_pts3d = pred_vi.get("pts3d_in_other_view", None) if pred_vi is not None else None
                 if pr_pts3d is not None and isinstance(pr_pts3d, torch.Tensor):
                     try:
                         from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
                         K = view.get("camera_intrinsics", None)
                         gp = view.get("camera_pose", None)
                         if gt_depth is not None and isinstance(gt_depth, torch.Tensor) and K is not None and isinstance(K, torch.Tensor) and gp is not None and isinstance(gp, torch.Tensor):
-                            if pr_pts3d.ndim == 4 and pr_pts3d.shape[1] > vi:
-                                pr = pr_pts3d[:, vi]
-                            else:
-                                pr = pr_pts3d
+                            pr = pr_pts3d
                             gt_pts = depthmap_to_pts3d(depth=gt_depth, pseudo_focal=None)
                             gt_world = geotrf(gp, gt_pts)
                             pr_flat = pr.reshape(pr.shape[0], -1, 3)
@@ -838,21 +842,16 @@ def test_one_epoch(
                                 pts3d_chamfer_l2s.append(l2)
                     except Exception:
                         pass
+                pr_conf = pred_vi.get("conf", None) if pred_vi is not None else None
                 if pr_conf is not None and isinstance(pr_conf, torch.Tensor):
-                    if pr_conf.ndim == 4 and pr_conf.shape[1] > vi:
-                        pc = pr_conf[:, vi]
-                    else:
-                        pc = pr_conf
-                    conf_means.append(pc.mean().item())
-                if "track_conf" in preds and "vis" in preds:
-                    tconf = preds["track_conf"]
-                    tvis = preds["vis"]
+                    conf_means.append(pr_conf.mean().item())
+                if pred_vi is not None:
+                    tconf = pred_vi.get("track_conf", None)
+                    tvis = pred_vi.get("vis", None)
                     if isinstance(tconf, torch.Tensor):
-                        tc = tconf[:, vi] if tconf.ndim == 3 and tconf.shape[1] > vi else tconf
-                        track_conf_means.append(tc.mean().item())
+                        track_conf_means.append(tconf.mean().item())
                     if isinstance(tvis, torch.Tensor):
-                        tv = tvis[:, vi] if tvis.ndim == 3 and tvis.shape[1] > vi else tvis
-                        track_vis_ratios.append(tv.float().mean().item())
+                        track_vis_ratios.append(tvis.float().mean().item())
             if depth_absrels:
                 metric_logger.update(depth_absrel=float(np.mean(depth_absrels)))
             if depth_rmses:
