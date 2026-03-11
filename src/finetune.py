@@ -327,7 +327,7 @@ def train(args):
         eval_every = 1
         if eval_every is None:
             eval_every = getattr(args, "eval_freq", 0)
-        if epoch > 0 and eval_every > 0 and epoch % eval_every == 0:
+        if eval_every > 0 and epoch % eval_every == 0:
             test_stats = {}
             for test_name, testset in data_loader_test.items():
                 stats = test_one_epoch(
@@ -661,6 +661,18 @@ def test_one_epoch(
 
     if hasattr(data_loader, "dataset") and hasattr(data_loader.dataset, "set_epoch"):
         data_loader.dataset.set_epoch(0)
+        try:
+            from dust3r.datasets.base.easy_dataset import ResizedDataset
+            if isinstance(data_loader.dataset, ResizedDataset):
+                import numpy as np
+                rng = np.random.default_rng(42)
+                base_len = len(data_loader.dataset.dataset)
+                new_size = len(data_loader.dataset)
+                perm = rng.permutation(base_len)
+                shuffled_idxs = np.concatenate([perm] * (1 + (new_size - 1) // base_len))
+                data_loader.dataset._idxs_mapping = shuffled_idxs[: new_size]
+        except Exception:
+            pass
     if (
         hasattr(data_loader, "batch_sampler")
         and hasattr(data_loader.batch_sampler, "batch_sampler")
