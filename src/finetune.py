@@ -710,6 +710,158 @@ def test_one_epoch(
         loss_value, loss_details = result["loss"]  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
 
+        if isinstance(batch, list):
+            preds = result.get("pred", {})
+            depth_absrels = []
+            depth_rmses = []
+            depth_log_rmses = []
+            depth_si_rmses = []
+            depth_delta_125s = []
+            depth_delta_1252s = []
+            depth_delta_1253s = []
+            pose_rot_degs = []
+            pose_trans_errs = []
+            pts3d_chamfer_l1s = []
+            pts3d_chamfer_l2s = []
+            conf_means = []
+            track_conf_means = []
+            track_vis_ratios = []
+            pr_depth = preds.get("depth", None)
+            pr_pose = preds.get("camera_pose", None)
+            pr_pts3d = preds.get("pts3d_in_other_view", None)
+            pr_conf = preds.get("conf", None)
+            for vi, view in enumerate(batch):
+                gt_depth = view.get("depthmap", None)
+                mask = view.get("ray_mask", None)
+                if mask is None:
+                    mask = view.get("valid_mask", None)
+                if gt_depth is not None and isinstance(gt_depth, torch.Tensor) and pr_depth is not None and isinstance(pr_depth, torch.Tensor):
+                    if pr_depth.ndim == 4 and pr_depth.shape[1] > vi:
+                        pd = pr_depth[:, vi]
+                    else:
+                        pd = pr_depth
+                    if pd.shape[-2:] == gt_depth.shape[-2:]:
+                        g = gt_depth
+                        if mask is not None and isinstance(mask, torch.Tensor) and mask.shape[-2:] == g.shape[-2:]:
+                            m = mask
+                        else:
+                            m = torch.ones_like(g[..., 0], dtype=torch.bool)
+                        eps = torch.tensor(1e-6, device=g.device, dtype=g.dtype)
+                        rel = (pd - g).abs() / torch.maximum(g.abs(), eps)
+                        rel = rel[m].mean().item()
+                        rmse = torch.sqrt(((pd - g).square())[m].mean()).item()
+                        # log RMSE
+                        pd_safe = torch.maximum(pd, eps)
+                        g_safe = torch.maximum(g, eps)
+                        log_diff = (pd_safe.log() - g_safe.log())
+                        log_rmse = torch.sqrt((log_diff.square())[m].mean()).item()
+                        # scale-invariant RMSE (remove mean of log diff)
+                        mu = log_diff[m].mean()
+                        si_rmse = torch.sqrt(((log_diff - mu).square())[m].mean()).item()
+                        # delta accuracies
+                        ratio = torch.maximum(pd_safe / g_safe, g_safe / pd_safe)
+                        d125 = (ratio[m] < 1.25).float().mean().item()
+                        d1252 = (ratio[m] < 1.25**2).float().mean().item()
+                        d1253 = (ratio[m] < 1.25**3).float().mean().item()
+                        depth_absrels.append(rel)
+                        depth_rmses.append(rmse)
+                        depth_log_rmses.append(log_rmse)
+                        depth_si_rmses.append(si_rmse)
+                        depth_delta_125s.append(d125)
+                        depth_delta_1252s.append(d1252)
+                        depth_delta_1253s.append(d1253)
+                gt_pose = view.get("camera_pose", None)
+                if gt_pose is not None and isinstance(gt_pose, torch.Tensor) and pr_pose is not None and isinstance(pr_pose, torch.Tensor):
+                    if pr_pose.ndim == 4 and pr_pose.shape[1] > vi:
+                        pp = pr_pose[:, vi]
+                    else:
+                        pp = pr_pose
+                    gp = gt_pose
+                    Rp = pp[:, :3, :3]
+                    Rg = gp[:, :3, :3]
+                    Rrel = Rp @ Rg.transpose(1, 2)
+                    tr = Rrel[:, 0, 0] + Rrel[:, 1, 1] + Rrel[:, 2, 2]
+                    val = torch.clamp((tr - 1) / 2, -1.0, 1.0)
+                    ang = torch.rad2deg(torch.acos(val)).mean().item()
+                    tp = pp[:, :3, 3]
+                    tg = gp[:, :3, 3]
+                    terr = torch.linalg.norm(tp - tg, dim=1).mean().item()
+                    pose_rot_degs.append(ang)
+                    pose_trans_errs.append(terr)
+                if pr_pts3d is not None and isinstance(pr_pts3d, torch.Tensor):
+                    try:
+                        from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
+                        K = view.get("camera_intrinsics", None)
+                        gp = view.get("camera_pose", None)
+                        if gt_depth is not None and isinstance(gt_depth, torch.Tensor) and K is not None and isinstance(K, torch.Tensor) and gp is not None and isinstance(gp, torch.Tensor):
+                            if pr_pts3d.ndim == 4 and pr_pts3d.shape[1] > vi:
+                                pr = pr_pts3d[:, vi]
+                            else:
+                                pr = pr_pts3d
+                            gt_pts = depthmap_to_pts3d(depth=gt_depth, pseudo_focal=None)
+                            gt_world = geotrf(gp, gt_pts)
+                            pr_flat = pr.reshape(pr.shape[0], -1, 3)
+                            gt_flat = gt_world.reshape(gt_world.shape[0], -1, 3)
+                            if mask is not None and isinstance(mask, torch.Tensor):
+                                m_flat = mask.reshape(mask.shape[0], -1)
+                            else:
+                                m_flat = torch.ones(pr_flat.shape[:2], dtype=torch.bool, device=pr_flat.device)
+                            pr_sel = pr_flat[m_flat]
+                            gt_sel = gt_flat[m_flat]
+                            if pr_sel.numel() > 0 and gt_sel.numel() > 0:
+                                pr_sel = pr_sel.view(-1, 3)
+                                gt_sel = gt_sel.view(-1, 3)
+                                dmat = torch.cdist(pr_sel.unsqueeze(0), gt_sel.unsqueeze(0), p=2).squeeze(0)
+                                l1 = dmat.min(dim=1).values.mean().item()
+                                l2 = torch.sqrt(dmat.square().min(dim=1).values.mean()).item()
+                                pts3d_chamfer_l1s.append(l1)
+                                pts3d_chamfer_l2s.append(l2)
+                    except Exception:
+                        pass
+                if pr_conf is not None and isinstance(pr_conf, torch.Tensor):
+                    if pr_conf.ndim == 4 and pr_conf.shape[1] > vi:
+                        pc = pr_conf[:, vi]
+                    else:
+                        pc = pr_conf
+                    conf_means.append(pc.mean().item())
+                if "track_conf" in preds and "vis" in preds:
+                    tconf = preds["track_conf"]
+                    tvis = preds["vis"]
+                    if isinstance(tconf, torch.Tensor):
+                        tc = tconf[:, vi] if tconf.ndim == 3 and tconf.shape[1] > vi else tconf
+                        track_conf_means.append(tc.mean().item())
+                    if isinstance(tvis, torch.Tensor):
+                        tv = tvis[:, vi] if tvis.ndim == 3 and tvis.shape[1] > vi else tvis
+                        track_vis_ratios.append(tv.float().mean().item())
+            if depth_absrels:
+                metric_logger.update(depth_absrel=float(np.mean(depth_absrels)))
+            if depth_rmses:
+                metric_logger.update(depth_rmse=float(np.mean(depth_rmses)))
+            if depth_log_rmses:
+                metric_logger.update(depth_log_rmse=float(np.mean(depth_log_rmses)))
+            if depth_si_rmses:
+                metric_logger.update(depth_si_rmse=float(np.mean(depth_si_rmses)))
+            if depth_delta_125s:
+                metric_logger.update(depth_delta_125=float(np.mean(depth_delta_125s)))
+            if depth_delta_1252s:
+                metric_logger.update(depth_delta_1252=float(np.mean(depth_delta_1252s)))
+            if depth_delta_1253s:
+                metric_logger.update(depth_delta_1253=float(np.mean(depth_delta_1253s)))
+            if pose_rot_degs:
+                metric_logger.update(pose_rot_deg=float(np.mean(pose_rot_degs)))
+            if pose_trans_errs:
+                metric_logger.update(pose_trans_err=float(np.mean(pose_trans_errs)))
+            if pts3d_chamfer_l1s:
+                metric_logger.update(pts3d_chamfer_l1=float(np.mean(pts3d_chamfer_l1s)))
+            if pts3d_chamfer_l2s:
+                metric_logger.update(pts3d_chamfer_l2=float(np.mean(pts3d_chamfer_l2s)))
+            if conf_means:
+                metric_logger.update(conf_mean=float(np.mean(conf_means)))
+            if track_conf_means:
+                metric_logger.update(track_conf_mean=float(np.mean(track_conf_means)))
+            if track_vis_ratios:
+                metric_logger.update(track_vis_ratio=float(np.mean(track_vis_ratios)))
+
     printer.info("Averaged stats: %s", metric_logger)
 
     aggs = [("avg", "global_avg"), ("med", "median")]
