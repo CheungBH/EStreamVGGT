@@ -282,6 +282,14 @@ def train(args):
                 os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8"
             ) as f:
                 f.write(json.dumps(log_stats) + "\n")
+            metrics_line = {"epoch": epoch}
+            for test_name in data_loader_test:
+                if test_name in test_stats:
+                    metrics_line[test_name] = test_stats[test_name]
+            with open(
+                os.path.join(args.output_dir, "metric.txt"), mode="a", encoding="utf-8"
+            ) as f:
+                f.write(json.dumps(metrics_line) + "\n")
 
     def save_model(epoch, fname, best_so_far, data_iter_step):
         misc.save_model(
