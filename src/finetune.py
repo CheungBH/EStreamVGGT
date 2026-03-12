@@ -985,39 +985,26 @@ def test_one_epoch(
     # add original visualization inputs: gt_img_k, pred_rgb_k, masks and conf
     for k in range(len(batch)):
         view = batch[k]
-        if "img" in view:
-            imgs = view["img"].detach().cpu()
+
+        imgs = view["img"].detach().cpu()
             # [B,3,H,W] -> [B,H,W,3], keep value range as is (typically [-1,1])
-            imgs_hw = imgs.permute(0, 2, 3, 1)
-            loss_details[f"gt_img_{k+1}"] = imgs_hw
-            loss_details[f"pred_rgb_{k+1}"] = imgs_hw
-        else:
-            # fallback: use depth color as image
-            loss_details[f"gt_img_{k+1}"] = colorize(loss_details[f"gt_depth_{k+1}"], append_cbar=True)
-            loss_details[f"pred_rgb_{k+1}"] = colorize(loss_details[f"pred_depth_{k+1}"], append_cbar=True)
-        if "img_mask" in view:
-            loss_details[f"img_mask_{k+1}"] = view["img_mask"].detach().cpu()
-        else:
-            # zeros mask
-            gd = loss_details[f"gt_depth_{k+1}"]
-            loss_details[f"img_mask_{k+1}"] = torch.zeros((gd.shape[0], gd.shape[1], gd.shape[2]))
-        if "ray_mask" in view:
-            loss_details[f"ray_mask_{k+1}"] = view["ray_mask"].detach().cpu()
-        else:
-            gd = loss_details[f"gt_depth_{k+1}"]
-            loss_details[f"ray_mask_{k+1}"] = torch.zeros((gd.shape[0], gd.shape[1], gd.shape[2]))
+        imgs_hw = imgs.permute(0, 2, 3, 1)
+        loss_details[f"gt_img{k+1}"] = imgs_hw
+        loss_details[f"pred_rgb_{k+1}"] = imgs_hw
+
+        loss_details[f"img_mask_{k+1}"] = view["img_mask"].detach().cpu()
+
+        loss_details[f"ray_mask_{k+1}"] = view["ray_mask"].detach().cpu()
+
         # conf: prefer depth_conf, fallback to conf
         pred_vi = result["pred"][k] if isinstance(result["pred"], list) else result["pred"]
         if isinstance(pred_vi, dict):
-            if "depth_conf" in pred_vi:
-                loss_details[f"conf_{k+1}"] = pred_vi["depth_conf"].detach().cpu()
-            elif "conf" in pred_vi:
-                loss_details[f"conf_{k+1}"] = pred_vi["conf"].detach().cpu()
+            loss_details[f"conf_{k+1}"] = pred_vi["depth_conf"].detach().cpu()
+
     imgs_stacked_dict = get_vis_imgs_new(
         loss_details,
         args.num_imgs_vis,
         args.num_test_views,
-        is_metric=batch[0]["is_metric"],
         is_metric=batch[0]["is_metric"],
     )
     save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict)
@@ -1167,44 +1154,53 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
     gt_rows = []
     pred_rows = []
     conf_rows = []
+    img_masks = []
+    ray_masks = []
     for b in range(n_vis):
         gt_view_imgs = []
         pred_view_imgs = []
         conf_view_imgs = []
+        img_mask_views = []
+        ray_mask_views = []
         for vi in range(eff_views):
             pd = loss_details[pred_keys[vi]][b]
             gd = loss_details[gt_keys[vi]][b]
             gt_key = f"gt_img{vi+1}"
             pred_key = f"pred_rgb_{vi+1}"
-            if gt_key in loss_details:
-                gt_img = 0.5 * (loss_details[gt_key][b] + 1).detach().cpu()
-            else:
-                gt_img = colorize(gd, append_cbar=True)
-            if pred_key in loss_details:
-                pred_img = 0.5 * (loss_details[pred_key][b] + 1).detach().cpu()
-            else:
-                pred_img = colorize(pd, append_cbar=True)
+            assert gt_key in loss_details
+            assert pred_key in loss_details
+            gt_img = 0.5 * (loss_details[gt_key][b] + 1).detach().cpu()
+            pred_img = 0.5 * (loss_details[pred_key][b] + 1).detach().cpu()
             gt_view_imgs.append(gt_img)
             pred_view_imgs.append(pred_img)
             conf_key = f"conf_{vi+1}"
-            if conf_key in loss_details:
-                conf_view = colorize(loss_details[conf_key][b], append_cbar=True)
-                conf_view_imgs.append(conf_view)
+            assert conf_key in loss_details
+            conf_view = colorize(loss_details[conf_key][b], append_cbar=True)
+            conf_view_imgs.append(conf_view)
+            img_key = f"img_mask_{vi+1}"
+            ray_key = f"ray_mask_{vi+1}"
+            assert img_key in loss_details
+            assert ray_key in loss_details
+            img_mask_views.append(loss_details[img_key][b].detach().cpu())
+            ray_mask_views.append(loss_details[ray_key][b].detach().cpu())
         gt_rows.append(torch.cat(gt_view_imgs, dim=1))
         pred_rows.append(torch.cat(pred_view_imgs, dim=1))
-        if len(conf_view_imgs) > 0:
-            conf_rows.append(torch.cat(conf_view_imgs, dim=1))
-        else:
-            conf_rows.append(torch.zeros_like(gt_rows[-1]))
+        conf_rows.append(torch.cat(conf_view_imgs, dim=1))
+        img_masks.append(torch.stack(img_mask_views, dim=0))
+        ray_masks.append(torch.stack(ray_mask_views, dim=0))
+    # build cross-view depth grayscale by horizontal concat per sample
+    cross_gt_depths = [torch.cat([loss_details[gt_keys[vi]][i] for vi in range(eff_views)], dim=1) for i in range(n_vis)]
+    cross_pred_depths = [torch.cat([loss_details[pred_keys[vi]][i] for vi in range(eff_views)], dim=1) for i in range(n_vis)]
+    # ray indicator
+    indicators = gen_mask_indicator(img_masks, ray_masks, eff_views, 30, gt_rows[0].shape[1] // eff_views)
     for i in range(n_vis):
-        ray_indicator = torch.zeros((30, gt_rows[i].shape[1], 3))
         out = vis_and_cat(
             gt_rows[i],
             pred_rows[i],
-            colorize(torch.stack([loss_details[gt_keys[vi]][i] for vi in range(eff_views)], dim=0), append_cbar=True),
-            colorize(torch.stack([loss_details[pred_keys[vi]][i] for vi in range(eff_views)], dim=0), append_cbar=True),
+            cross_gt_depths[i],
+            cross_pred_depths[i],
             conf_rows[i],
-            ray_indicator,
+            indicators[i],
             is_metric if not isinstance(is_metric, (list, tuple)) else is_metric[i],
         )
         ret_dict[f"imgs_{i}"] = out
