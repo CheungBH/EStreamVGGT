@@ -56,6 +56,7 @@ from accelerate import DistributedDataParallelKwargs, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from datetime import timedelta
 import torch.multiprocessing
+from accelerate.utils import FSDPPlugin
 
 from vggt.models.vggt import VGGT
 
@@ -122,14 +123,29 @@ def train(args):
     # allow backend override via config or env (default nccl)
     import os
     dist_backend = getattr(args, "dist_backend", None) or os.environ.get("DIST_BACKEND", "nccl")
-    accelerator = Accelerator(
-        gradient_accumulation_steps=args.accum_iter,
-        mixed_precision=mp,
-        kwargs_handlers=[
-            DistributedDataParallelKwargs(find_unused_parameters=True),
-            InitProcessGroupKwargs(timeout=timedelta(seconds=6000), backend=dist_backend),
-        ],
-    )
+    use_dp = getattr(args, "use_dp", False) or os.environ.get("USE_DP", "").lower() in ("1", "true", "yes")
+    use_fsdp = getattr(args, "use_fsdp", False) or os.environ.get("USE_FSDP", "").lower() in ("1", "true", "yes")
+    if use_dp:
+        accelerator = DPAccelerator()
+    else:
+        fsdp_plugin = None
+        if use_fsdp:
+            fsdp_plugin = FSDPPlugin(
+                sharding_strategy="full_shard",
+                cpu_offload=False,
+                auto_wrap_policy=None,
+                limit_all_gathers=True,
+                sync_module_states=True,
+            )
+        accelerator = Accelerator(
+            gradient_accumulation_steps=args.accum_iter,
+            mixed_precision=mp,
+            kwargs_handlers=[
+                DistributedDataParallelKwargs(find_unused_parameters=True),
+                InitProcessGroupKwargs(timeout=timedelta(seconds=6000), backend=dist_backend),
+            ],
+            fsdp_plugin=fsdp_plugin,
+        )
     device = accelerator.device
 
     setup_for_distributed(accelerator)
