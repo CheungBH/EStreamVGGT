@@ -975,12 +975,13 @@ def test_one_epoch(
                 continue
             log_writer.add_scalar(prefix + "_" + name, val, 1000 * epoch)
 
-    depths_cross, gt_depths_cross = get_render_results(
-        batch, result["pred"], self_view=False
-    )
-    for k in range(len(batch)):
-        loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
-        loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()
+    if getattr(args, "num_imgs_vis", 0) and args.num_imgs_vis > 0:
+        depths_cross, gt_depths_cross = get_render_results(
+            batch, result["pred"], self_view=False
+        )
+        for k in range(len(batch)):
+            loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
+            loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()
 
     # add original visualization inputs: gt_img_k, pred_rgb_k, masks and conf
     for k in range(len(batch)):
@@ -1001,13 +1002,14 @@ def test_one_epoch(
         if isinstance(pred_vi, dict):
             loss_details[f"conf_{k+1}"] = pred_vi["depth_conf"].detach().cpu()
 
-    imgs_stacked_dict = get_vis_imgs_new(
-        loss_details,
-        args.num_imgs_vis,
-        args.num_test_views,
-        is_metric=batch[0]["is_metric"],
-    )
-    save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict)
+    if getattr(args, "num_imgs_vis", 0) and args.num_imgs_vis > 0:
+        imgs_stacked_dict = get_vis_imgs_new(
+            loss_details,
+            args.num_imgs_vis,
+            args.num_test_views,
+            is_metric=batch[0]["is_metric"],
+        )
+        save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict)
 
     del loss_details, loss_value, batch
     torch.cuda.empty_cache()
