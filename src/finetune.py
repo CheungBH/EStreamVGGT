@@ -985,16 +985,16 @@ def test_one_epoch(
             loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
             loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()
 
-        # imgs_stacked_dict = get_vis_imgs_new(
-        #     loss_details,
-        #     args.num_imgs_vis,
-        #     args.num_test_views,
-        #     is_metric=batch[0]["is_metric"],
-        # )
-        # for name, imgs_stacked in imgs_stacked_dict.items():
-        #     log_writer.add_images(
-        #         prefix + "/" + name, imgs_stacked, 1000 * epoch, dataformats="HWC"
-        #     )
+        imgs_stacked_dict = get_vis_imgs_new(
+            loss_details,
+            args.num_imgs_vis,
+            args.num_test_views,
+            is_metric=batch[0]["is_metric"],
+        )
+        for name, imgs_stacked in imgs_stacked_dict.items():
+            log_writer.add_images(
+                prefix + "/" + name, imgs_stacked, 1000 * epoch, dataformats="HWC"
+            )
 
     del loss_details, loss_value, batch
     torch.cuda.empty_cache()
@@ -1022,6 +1022,31 @@ def gen_mask_indicator(img_mask_list, ray_mask_list, num_views, h, w):
             out[:, i * w : (i + 1) * w] += offset
         output.append(out)
     return output
+
+
+def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric=False):
+    preds = []
+    gts = []
+    for k in range(1, num_views + 1):
+        pk = loss_details.get(f"pred_depth_{k}")
+        gk = loss_details.get(f"gt_depth_{k}")
+        if pk is None or gk is None:
+            continue
+        if isinstance(pk, torch.Tensor):
+            pk = pk.squeeze().detach().cpu().numpy()
+        if isinstance(gk, torch.Tensor):
+            gk = gk.squeeze().detach().cpu().numpy()
+        pm = colorize(pk)
+        gm = colorize(gk)
+        preds.append(pm)
+        gts.append(gm)
+    if not preds or not gts:
+        return {}
+    h, w, c = preds[0].shape
+    num = min(num_imgs_vis, len(preds))
+    pred_stack = np.concatenate(preds[:num], axis=1)
+    gt_stack = np.concatenate(gts[:num], axis=1)
+    return {"pred_depth": pred_stack, "gt_depth": gt_stack}
 
 
 def vis_and_cat(
