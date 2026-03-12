@@ -1,15 +1,16 @@
 import torch
-from gsplat import rasterization
+from typing import Optional
 from dust3r.utils.geometry import inv, geotrf
 
 
 def render(
     intrinsics: torch.Tensor,
     pts3d: torch.Tensor,
-    rgbs: torch.Tensor | None = None,
+    rgbs: Optional[torch.Tensor] = None,
     scale: float = 0.002,
     opacity: float = 0.95,
 ):
+    from gsplat import rasterization
 
     device = pts3d.device
     batch_size = len(intrinsics)
