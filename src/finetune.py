@@ -49,6 +49,7 @@ import random
 import builtins
 import shutil
 import imageio.v2 as iio
+import matplotlib.pyplot as plt
 
 from accelerate import Accelerator
 from accelerate import DistributedDataParallelKwargs, InitProcessGroupKwargs
@@ -388,6 +389,8 @@ def train(args):
     printer.info("Training time {}".format(total_time_str))
 
     save_final_model(accelerator, args, args.epochs, model, best_so_far=best_so_far)
+    if accelerator.is_main_process:
+        plot_all_metrics(args.output_dir)
 
 
 def save_final_model(accelerator, args, epoch, model_without_ddp, best_so_far=None):
@@ -406,6 +409,51 @@ def save_final_model(accelerator, args, epoch, model_without_ddp, best_so_far=No
         to_save["best_so_far"] = best_so_far
     printer.info(f">> Saving model to {checkpoint_path} ...")
     misc.save_on_master(accelerator, to_save, checkpoint_path)
+
+def plot_all_metrics(output_dir):
+    import json
+    import os
+    import numpy as np
+    mpath = os.path.join(output_dir, "metric.txt")
+    if not os.path.exists(mpath):
+        return
+    series = {}
+    with open(mpath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            epoch = obj.get("epoch")
+            for dataset, metrics in obj.items():
+                if dataset == "epoch":
+                    continue
+                if not isinstance(metrics, dict):
+                    continue
+                for k, v in metrics.items():
+                    key = f"{dataset}/{k}"
+                    series.setdefault(key, []).append((epoch, v))
+    outdir = os.path.join(output_dir, "visualize", "metrics")
+    os.makedirs(outdir, exist_ok=True)
+    for key, pts in series.items():
+        pts = sorted([(e, v) for e, v in pts if isinstance(e, (int, float)) and isinstance(v, (int, float, np.number))], key=lambda x: x[0])
+        if len(pts) < 1:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [float(p[1]) for p in pts]
+        plt.figure(figsize=(8, 4))
+        plt.plot(xs, ys, marker="o", linewidth=2)
+        plt.xlabel("epoch")
+        plt.ylabel(key.split("/", 1)[1])
+        plt.title(key)
+        plt.grid(True, alpha=0.3)
+        safe_key = key.replace("/", "__")
+        plt.tight_layout()
+        plt.savefig(os.path.join(outdir, f"{safe_key}.png"))
+        plt.close()
 
 
 def build_dataset(dataset, batch_size, num_workers, accelerator, test=False, fixed_length=False):
