@@ -982,10 +982,42 @@ def test_one_epoch(
         loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
         loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()
 
+    # add original visualization inputs: gt_img_k, pred_rgb_k, masks and conf
+    for k in range(len(batch)):
+        view = batch[k]
+        if "img" in view:
+            imgs = view["img"].detach().cpu()
+            # [B,3,H,W] -> [B,H,W,3], keep value range as is (typically [-1,1])
+            imgs_hw = imgs.permute(0, 2, 3, 1)
+            loss_details[f"gt_img_{k+1}"] = imgs_hw
+            loss_details[f"pred_rgb_{k+1}"] = imgs_hw
+        else:
+            # fallback: use depth color as image
+            loss_details[f"gt_img_{k+1}"] = colorize(loss_details[f"gt_depth_{k+1}"], append_cbar=True)
+            loss_details[f"pred_rgb_{k+1}"] = colorize(loss_details[f"pred_depth_{k+1}"], append_cbar=True)
+        if "img_mask" in view:
+            loss_details[f"img_mask_{k+1}"] = view["img_mask"].detach().cpu()
+        else:
+            # zeros mask
+            gd = loss_details[f"gt_depth_{k+1}"]
+            loss_details[f"img_mask_{k+1}"] = torch.zeros((gd.shape[0], gd.shape[1], gd.shape[2]))
+        if "ray_mask" in view:
+            loss_details[f"ray_mask_{k+1}"] = view["ray_mask"].detach().cpu()
+        else:
+            gd = loss_details[f"gt_depth_{k+1}"]
+            loss_details[f"ray_mask_{k+1}"] = torch.zeros((gd.shape[0], gd.shape[1], gd.shape[2]))
+        # conf: prefer depth_conf, fallback to conf
+        pred_vi = result["pred"][k] if isinstance(result["pred"], list) else result["pred"]
+        if isinstance(pred_vi, dict):
+            if "depth_conf" in pred_vi:
+                loss_details[f"conf_{k+1}"] = pred_vi["depth_conf"].detach().cpu()
+            elif "conf" in pred_vi:
+                loss_details[f"conf_{k+1}"] = pred_vi["conf"].detach().cpu()
     imgs_stacked_dict = get_vis_imgs_new(
         loss_details,
         args.num_imgs_vis,
         args.num_test_views,
+        is_metric=batch[0]["is_metric"],
         is_metric=batch[0]["is_metric"],
     )
     save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict)
@@ -1124,100 +1156,56 @@ def vis_and_cat(
 
 
 def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
+    pred_keys = sorted([k for k in loss_details.keys() if k.startswith("pred_depth_")], key=lambda x: int(x.split("_")[-1]))
+    gt_keys = sorted([k for k in loss_details.keys() if k.startswith("gt_depth_")], key=lambda x: int(x.split("_")[-1]))
+    if len(pred_keys) == 0 or len(gt_keys) == 0:
+        return {}
+    eff_views = min(num_views, len(pred_keys), len(gt_keys))
+    B = loss_details[pred_keys[0]].shape[0]
+    n_vis = min(B, num_imgs_vis if num_imgs_vis and num_imgs_vis > 0 else B)
     ret_dict = {}
-    gt_img_list = [[] for _ in range(num_imgs_vis)]
-    pred_img_list = [[] for _ in range(num_imgs_vis)]
-
-    cross_gt_depth_list = [[] for _ in range(num_imgs_vis)]
-    cross_pred_depth_list = [[] for _ in range(num_imgs_vis)]
-
-    cross_view_conf_list = [[] for _ in range(num_imgs_vis)]
-    cross_view_conf_exits = False
-
-    img_mask_list = [[] for _ in range(num_imgs_vis)]
-    ray_mask_list = [[] for _ in range(num_imgs_vis)]
-
-    if num_views > 30:
-        stride = 5
-    elif num_views > 20:
-        stride = 3
-    elif num_views > 10:
-        stride = 2
-    else:
-        stride = 1
-    for i in range(0, num_views, stride):
-        gt_key = f"gt_img{i+1}"
-        gt_imgs = 0.5 * (loss_details[gt_key] + 1)[:num_imgs_vis].detach().cpu()
-        width = gt_imgs.shape[2]
-        pred_key = f"pred_rgb_{i+1}"
-        if pred_key in loss_details:
-            pred_imgs = 0.5 * (loss_details[pred_key] + 1)[:num_imgs_vis].detach().cpu()
+    gt_rows = []
+    pred_rows = []
+    conf_rows = []
+    for b in range(n_vis):
+        gt_view_imgs = []
+        pred_view_imgs = []
+        conf_view_imgs = []
+        for vi in range(eff_views):
+            pd = loss_details[pred_keys[vi]][b]
+            gd = loss_details[gt_keys[vi]][b]
+            gt_key = f"gt_img{vi+1}"
+            pred_key = f"pred_rgb_{vi+1}"
+            if gt_key in loss_details:
+                gt_img = 0.5 * (loss_details[gt_key][b] + 1).detach().cpu()
+            else:
+                gt_img = colorize(gd, append_cbar=True)
+            if pred_key in loss_details:
+                pred_img = 0.5 * (loss_details[pred_key][b] + 1).detach().cpu()
+            else:
+                pred_img = colorize(pd, append_cbar=True)
+            gt_view_imgs.append(gt_img)
+            pred_view_imgs.append(pred_img)
+            conf_key = f"conf_{vi+1}"
+            if conf_key in loss_details:
+                conf_view = colorize(loss_details[conf_key][b], append_cbar=True)
+                conf_view_imgs.append(conf_view)
+        gt_rows.append(torch.cat(gt_view_imgs, dim=1))
+        pred_rows.append(torch.cat(pred_view_imgs, dim=1))
+        if len(conf_view_imgs) > 0:
+            conf_rows.append(torch.cat(conf_view_imgs, dim=1))
         else:
-            pred_imgs = gt_imgs
-        gt_img_list = batch_append(gt_img_list, gt_imgs.unbind(dim=0))
-        pred_img_list = batch_append(pred_img_list, pred_imgs.unbind(dim=0))
-
-        cross_pred_depths = (
-            loss_details[f"pred_depth_{i+1}"][:num_imgs_vis].detach().cpu()
-        )
-        cross_gt_depths = (
-            loss_details[f"gt_depth_{i+1}"]
-            .to(gt_imgs.device)[:num_imgs_vis]
-            .detach()
-            .cpu()
-        )
-        cross_pred_depth_list = batch_append(
-            cross_pred_depth_list, cross_pred_depths.unbind(dim=0)
-        )
-        cross_gt_depth_list = batch_append(
-            cross_gt_depth_list, cross_gt_depths.unbind(dim=0)
-        )
-
-        if f"conf_{i+1}" in loss_details:
-            cross_view_conf = loss_details[f"conf_{i+1}"][:num_imgs_vis].detach().cpu()
-            cross_view_conf_list = batch_append(
-                cross_view_conf_list, cross_view_conf.unbind(dim=0)
-            )
-            cross_view_conf_exits = True
-
-        img_mask_list = batch_append(
-            img_mask_list,
-            loss_details[f"img_mask_{i+1}"][:num_imgs_vis].detach().cpu().unbind(dim=0),
-        )
-        ray_mask_list = batch_append(
-            ray_mask_list,
-            loss_details[f"ray_mask_{i+1}"][:num_imgs_vis].detach().cpu().unbind(dim=0),
-        )
-
-    gt_img_list = [torch.cat(sublist, dim=1) for sublist in gt_img_list]
-    pred_img_list = [torch.cat(sublist, dim=1) for sublist in pred_img_list]
-    cross_pred_depth_list = [
-        torch.cat(sublist, dim=1) for sublist in cross_pred_depth_list
-    ]
-    cross_gt_depth_list = [torch.cat(sublist, dim=1) for sublist in cross_gt_depth_list]
-
-    cross_view_conf_list = (
-        [torch.cat(sublist, dim=1) for sublist in cross_view_conf_list]
-        if cross_view_conf_exits
-        else []
-    )
-
-    img_mask_list = [torch.stack(sublist, dim=0) for sublist in img_mask_list]
-    ray_mask_list = [torch.stack(sublist, dim=0) for sublist in ray_mask_list]
-
-    ray_indicator = gen_mask_indicator(
-        img_mask_list, ray_mask_list, len(img_mask_list[0]), 30, width
-    )
-
-    for i in range(num_imgs_vis):
+            conf_rows.append(torch.zeros_like(gt_rows[-1]))
+    for i in range(n_vis):
+        ray_indicator = torch.zeros((30, gt_rows[i].shape[1], 3))
         out = vis_and_cat(
-            gt_img_list[i],
-            pred_img_list[i],
-            cross_gt_depth_list[i],
-            cross_pred_depth_list[i],
-            cross_view_conf_list[i] if cross_view_conf_exits else torch.zeros_like(cross_gt_depth_list[i]),
-            ray_indicator[i],
-            is_metric[i] if isinstance(is_metric, (list, tuple)) else is_metric,
+            gt_rows[i],
+            pred_rows[i],
+            colorize(torch.stack([loss_details[gt_keys[vi]][i] for vi in range(eff_views)], dim=0), append_cbar=True),
+            colorize(torch.stack([loss_details[pred_keys[vi]][i] for vi in range(eff_views)], dim=0), append_cbar=True),
+            conf_rows[i],
+            ray_indicator,
+            is_metric if not isinstance(is_metric, (list, tuple)) else is_metric[i],
         )
         ret_dict[f"imgs_{i}"] = out
     return ret_dict
