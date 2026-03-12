@@ -746,6 +746,9 @@ def test_one_epoch(
             conf_means = []
             track_conf_means = []
             track_vis_ratios = []
+            pose_auc30s = []
+            acc_means = []
+            comp_means = []
             for vi, view in enumerate(batch):
                 pred_vi = None
                 if isinstance(preds, list) and len(preds) > vi:
@@ -801,7 +804,6 @@ def test_one_epoch(
                 if gt_pose is not None and isinstance(gt_pose, torch.Tensor) and pr_pose is not None and isinstance(pr_pose, torch.Tensor):
                     gp = gt_pose
                     pp = pr_pose
-                    # only compute when predicted pose is a matrix
                     if pp.ndim == 3 and pp.shape[-2:] == (3, 4):
                         Rp = pp[:, :3, :3]
                         Rg = gp[:, :3, :3]
@@ -814,6 +816,42 @@ def test_one_epoch(
                         terr = torch.linalg.norm(tp - tg, dim=1).mean().item()
                         pose_rot_degs.append(ang)
                         pose_trans_errs.append(terr)
+                        ths = torch.linspace(0, 30, steps=31, device=pp.device)
+                        auc = (ang <= ths).float().mean().item()
+                        pose_auc30s.append(auc)
+                    elif pp.ndim == 2 and pp.shape[-1] == 7:
+                        t = pp[:, :3]
+                        q = pp[:, 3:]
+                        qw, qx, qy, qz = q[:, 3], q[:, 0], q[:, 1], q[:, 2]
+                        R11 = 1 - 2 * (qy * qy + qz * qz)
+                        R12 = 2 * (qx * qy - qz * qw)
+                        R13 = 2 * (qx * qz + qy * qw)
+                        R21 = 2 * (qx * qy + qz * qw)
+                        R22 = 1 - 2 * (qx * qx + qz * qz)
+                        R23 = 2 * (qy * qz - qx * qw)
+                        R31 = 2 * (qx * qz - qy * qw)
+                        R32 = 2 * (qy * qz + qx * qw)
+                        R33 = 1 - 2 * (qx * qx + qy * qy)
+                        Rp = torch.stack(
+                            [
+                                torch.stack([R11, R12, R13], dim=-1),
+                                torch.stack([R21, R22, R23], dim=-1),
+                                torch.stack([R31, R32, R33], dim=-1),
+                            ],
+                            dim=1,
+                        )
+                        Rg = gp[:, :3, :3]
+                        Rrel = Rp @ Rg.transpose(1, 2)
+                        tr = Rrel[:, 0, 0] + Rrel[:, 1, 1] + Rrel[:, 2, 2]
+                        val = torch.clamp((tr - 1) / 2, -1.0, 1.0)
+                        ang = torch.rad2deg(torch.acos(val)).mean().item()
+                        tg = gp[:, :3, 3]
+                        terr = torch.linalg.norm(t - tg, dim=1).mean().item()
+                        pose_rot_degs.append(ang)
+                        pose_trans_errs.append(terr)
+                        ths = torch.linspace(0, 30, steps=31, device=pp.device)
+                        auc = (ang <= ths).float().mean().item()
+                        pose_auc30s.append(auc)
                 pr_pts3d = pred_vi.get("pts3d_in_other_view", None) if pred_vi is not None else None
                 if pr_pts3d is not None and isinstance(pr_pts3d, torch.Tensor):
                     try:
@@ -840,6 +878,11 @@ def test_one_epoch(
                                 l2 = torch.sqrt(dmat.square().min(dim=1).values.mean()).item()
                                 pts3d_chamfer_l1s.append(l1)
                                 pts3d_chamfer_l2s.append(l2)
+                                tau = 0.05
+                                acc = (dmat.min(dim=1).values < tau).float().mean().item()
+                                comp = (dmat.min(dim=0).values < tau).float().mean().item()
+                                acc_means.append(acc)
+                                comp_means.append(comp)
                     except Exception:
                         pass
                 pr_conf = pred_vi.get("conf", None) if pred_vi is not None else None
@@ -870,10 +913,16 @@ def test_one_epoch(
                 metric_logger.update(pose_rot_deg=float(np.mean(pose_rot_degs)))
             if pose_trans_errs:
                 metric_logger.update(pose_trans_err=float(np.mean(pose_trans_errs)))
+            if pose_auc30s:
+                metric_logger.update(pose_auc30=float(np.mean(pose_auc30s)))
             if pts3d_chamfer_l1s:
                 metric_logger.update(pts3d_chamfer_l1=float(np.mean(pts3d_chamfer_l1s)))
             if pts3d_chamfer_l2s:
                 metric_logger.update(pts3d_chamfer_l2=float(np.mean(pts3d_chamfer_l2s)))
+            if acc_means:
+                metric_logger.update(pts3d_acc=float(np.mean(acc_means)))
+            if comp_means:
+                metric_logger.update(pts3d_comp=float(np.mean(comp_means)))
             if conf_means:
                 metric_logger.update(conf_mean=float(np.mean(conf_means)))
             if track_conf_means:
