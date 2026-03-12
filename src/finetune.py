@@ -112,12 +112,21 @@ def save_current_code(outdir):
 
 def train(args):
 
+    # dynamic mixed precision for GPU arch (Ampere+ uses bf16, otherwise fp16)
+    try:
+        cap = torch.cuda.get_device_capability(0)[0] if torch.cuda.is_available() else 0
+    except Exception:
+        cap = 0
+    mp = "bf16" if cap >= 8 else "fp16"
+    # allow backend override via config or env (default nccl)
+    import os
+    dist_backend = getattr(args, "dist_backend", None) or os.environ.get("DIST_BACKEND", "nccl")
     accelerator = Accelerator(
         gradient_accumulation_steps=args.accum_iter,
-        mixed_precision="bf16",
+        mixed_precision=mp,
         kwargs_handlers=[
             DistributedDataParallelKwargs(find_unused_parameters=True),
-            InitProcessGroupKwargs(timeout=timedelta(seconds=6000)),
+            InitProcessGroupKwargs(timeout=timedelta(seconds=6000), backend=dist_backend),
         ],
     )
     device = accelerator.device
