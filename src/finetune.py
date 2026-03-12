@@ -48,6 +48,7 @@ from tqdm import tqdm
 import random
 import builtins
 import shutil
+import imageio.v2 as iio
 
 from accelerate import Accelerator
 from accelerate import DistributedDataParallelKwargs, InitProcessGroupKwargs
@@ -604,13 +605,10 @@ def train_one_epoch(
                             gt_depths_cross[k].detach().cpu()
                         )
 
-                imgs_stacked_dict = get_vis_imgs_new(
-                    loss_details, args.num_imgs_vis, curr_num_view, is_metric=is_metric
-                )
-                for name, imgs_stacked in imgs_stacked_dict.items():
-                    log_writer.add_images(
-                        "train" + "/" + name, imgs_stacked, step, dataformats="HWC"
-                    )
+                # imgs_stacked_dict = get_vis_imgs_new(
+                #     loss_details, args.num_imgs_vis, curr_num_view, is_metric=is_metric
+                # )
+                # save_vis_imgs(args.output_dir, "train", epoch, imgs_stacked_dict, step=data_iter_step)
                 del batch
             del loss_details
             del result
@@ -991,10 +989,7 @@ def test_one_epoch(
             args.num_test_views,
             is_metric=batch[0]["is_metric"],
         )
-        for name, imgs_stacked in imgs_stacked_dict.items():
-            log_writer.add_images(
-                prefix + "/" + name, imgs_stacked, 1000 * epoch, dataformats="HWC"
-            )
+        save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict)
 
     del loss_details, loss_value, batch
     torch.cuda.empty_cache()
@@ -1047,6 +1042,18 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric=False):
     pred_stack = np.concatenate(preds[:num], axis=1)
     gt_stack = np.concatenate(gts[:num], axis=1)
     return {"pred_depth": pred_stack, "gt_depth": gt_stack}
+
+
+def save_vis_imgs(outdir, prefix, epoch, imgs_stacked_dict, step=None):
+    base = os.path.join(outdir, "visualize", f"epoch_{epoch}", str(prefix))
+    os.makedirs(base, exist_ok=True)
+    for name, imgs_stacked in imgs_stacked_dict.items():
+        arr = imgs_stacked.detach().cpu().numpy()
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 1)
+            arr = (arr * 255).astype(np.uint8)
+        fname = f"{name}.png" if step is None else f"{name}_step{step}.png"
+        iio.imwrite(os.path.join(base, fname), arr)
 
 
 def vis_and_cat(
@@ -1142,25 +1149,27 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
         stride = 1
     for i in range(0, num_views, stride):
         gt_key = f"gt_img{i+1}"
-        gt_imgs = 0.5 * (loss_details[gt_key] + 1)[:num_imgs_vis].detach().cpu()
-        width = gt_imgs.shape[2]
         pred_key = f"pred_rgb_{i+1}"
-        if pred_key in loss_details:
+        has_gt_img = gt_key in loss_details
+        has_pred_img = pred_key in loss_details
+        cross_pred_depths = loss_details.get(f"pred_depth_{i+1}")
+        cross_gt_depths = loss_details.get(f"gt_depth_{i+1}")
+        if cross_gt_depths is None or cross_pred_depths is None:
+            # skip this view if depths are missing
+            continue
+        cross_pred_depths = cross_pred_depths[:num_imgs_vis].detach().cpu()
+        cross_gt_depths = cross_gt_depths.to(cross_pred_depths.device)[:num_imgs_vis].detach().cpu()
+        if has_gt_img:
+            gt_imgs = 0.5 * (loss_details[gt_key] + 1)[:num_imgs_vis].detach().cpu()
+        else:
+            gt_imgs = colorize(cross_gt_depths)
+        width = gt_imgs.shape[2]
+        if has_pred_img:
             pred_imgs = 0.5 * (loss_details[pred_key] + 1)[:num_imgs_vis].detach().cpu()
         else:
-            pred_imgs = gt_imgs
+            pred_imgs = colorize(cross_pred_depths)
         gt_img_list = batch_append(gt_img_list, gt_imgs.unbind(dim=0))
         pred_img_list = batch_append(pred_img_list, pred_imgs.unbind(dim=0))
-
-        cross_pred_depths = (
-            loss_details[f"pred_depth_{i+1}"][:num_imgs_vis].detach().cpu()
-        )
-        cross_gt_depths = (
-            loss_details[f"gt_depth_{i+1}"]
-            .to(gt_imgs.device)[:num_imgs_vis]
-            .detach()
-            .cpu()
-        )
         cross_pred_depth_list = batch_append(
             cross_pred_depth_list, cross_pred_depths.unbind(dim=0)
         )
@@ -1175,22 +1184,32 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
             )
             cross_view_conf_exits = True
 
-        img_mask_list = batch_append(
-            img_mask_list,
-            loss_details[f"img_mask_{i+1}"][:num_imgs_vis].detach().cpu().unbind(dim=0),
-        )
-        ray_mask_list = batch_append(
-            ray_mask_list,
-            loss_details[f"ray_mask_{i+1}"][:num_imgs_vis].detach().cpu().unbind(dim=0),
-        )
+        if f"img_mask_{i+1}" in loss_details:
+            img_mask_list = batch_append(
+                img_mask_list,
+                loss_details[f"img_mask_{i+1}"][:num_imgs_vis].detach().cpu().unbind(dim=0),
+            )
+        else:
+            zeros = torch.zeros((num_imgs_vis, gt_imgs.shape[1], gt_imgs.shape[2]))
+            img_mask_list = batch_append(img_mask_list, zeros.unbind(dim=0))
+        if f"ray_mask_{i+1}" in loss_details:
+            ray_mask_list = batch_append(
+                ray_mask_list,
+                loss_details[f"ray_mask_{i+1}"][:num_imgs_vis].detach().cpu().unbind(dim=0),
+            )
+        else:
+            zeros = torch.zeros((num_imgs_vis, gt_imgs.shape[1], gt_imgs.shape[2]))
+            ray_mask_list = batch_append(ray_mask_list, zeros.unbind(dim=0))
 
     # each element in the list is [H, num_views * W, (3)], the size of the list is num_imgs_vis
-    gt_img_list = [torch.cat(sublist, dim=1) for sublist in gt_img_list]
-    pred_img_list = [torch.cat(sublist, dim=1) for sublist in pred_img_list]
+    if any(len(sub) == 0 for sub in gt_img_list):
+        return {}
+    gt_img_list = [torch.cat(sublist, dim=1) if len(sublist) > 0 else torch.zeros(1) for sublist in gt_img_list]
+    pred_img_list = [torch.cat(sublist, dim=1) if len(sublist) > 0 else torch.zeros(1) for sublist in pred_img_list]
     cross_pred_depth_list = [
-        torch.cat(sublist, dim=1) for sublist in cross_pred_depth_list
+        torch.cat(sublist, dim=1) if len(sublist) > 0 else torch.zeros(1) for sublist in cross_pred_depth_list
     ]
-    cross_gt_depth_list = [torch.cat(sublist, dim=1) for sublist in cross_gt_depth_list]
+    cross_gt_depth_list = [torch.cat(sublist, dim=1) if len(sublist) > 0 else torch.zeros(1) for sublist in cross_gt_depth_list]
 
     cross_view_conf_list = (
         [torch.cat(sublist, dim=1) for sublist in cross_view_conf_list]
@@ -1199,13 +1218,18 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
     )
 
     # each elment in the list is [num_views,], the size of the list is num_imgs_vis
-    img_mask_list = [torch.stack(sublist, dim=0) for sublist in img_mask_list]
-    ray_mask_list = [torch.stack(sublist, dim=0) for sublist in ray_mask_list]
+    img_mask_list = [torch.stack(sublist, dim=0) if len(sublist) > 0 else torch.zeros(1) for sublist in img_mask_list]
+    ray_mask_list = [torch.stack(sublist, dim=0) if len(sublist) > 0 else torch.zeros(1) for sublist in ray_mask_list]
 
     ray_indicator = gen_mask_indicator(
         img_mask_list, ray_mask_list, len(img_mask_list[0]), 30, width
     )
 
+    # normalize is_metric to list
+    if isinstance(is_metric, (bool, int, float, torch.Tensor)):
+        is_metric_list = [bool(is_metric)] * num_imgs_vis
+    else:
+        is_metric_list = is_metric
     for i in range(num_imgs_vis):
         out = vis_and_cat(
             gt_img_list[i],
@@ -1214,7 +1238,7 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
             cross_pred_depth_list[i],
             cross_view_conf_list[i],
             ray_indicator[i],
-            is_metric[i],
+            is_metric_list[i],
         )
         ret_dict[f"imgs_{i}"] = out
     return ret_dict
