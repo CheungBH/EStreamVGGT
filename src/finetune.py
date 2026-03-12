@@ -1175,7 +1175,7 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
             pred_view_imgs.append(pred_img)
             conf_key = f"conf_{vi+1}"
             assert conf_key in loss_details
-            conf_view = colorize(loss_details[conf_key][b], append_cbar=True)
+            conf_view = loss_details[conf_key][b].detach().cpu()
             conf_view_imgs.append(conf_view)
             img_key = f"img_mask_{vi+1}"
             ray_key = f"ray_mask_{vi+1}"
