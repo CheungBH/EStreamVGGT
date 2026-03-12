@@ -748,7 +748,11 @@ def test_one_epoch(
             track_vis_ratios = []
             pose_auc30s = []
             acc_means = []
+            acc_meds = []
             comp_means = []
+            comp_meds = []
+            nc_means = []
+            nc_meds = []
             for vi, view in enumerate(batch):
                 pred_vi = None
                 if isinstance(preds, list) and len(preds) > vi:
@@ -874,15 +878,32 @@ def test_one_epoch(
                                 pr_sel = pr_sel.view(-1, 3)
                                 gt_sel = gt_sel.view(-1, 3)
                                 dmat = torch.cdist(pr_sel.unsqueeze(0), gt_sel.unsqueeze(0), p=2).squeeze(0)
-                                l1 = dmat.min(dim=1).values.mean().item()
-                                l2 = torch.sqrt(dmat.square().min(dim=1).values.mean()).item()
+                                d_pred_to_gt = dmat.min(dim=1).values
+                                d_gt_to_pred = dmat.min(dim=0).values
+                                l1 = d_pred_to_gt.mean().item()
+                                l2 = torch.sqrt(d_pred_to_gt.square().mean()).item()
                                 pts3d_chamfer_l1s.append(l1)
                                 pts3d_chamfer_l2s.append(l2)
-                                tau = 0.05
-                                acc = (dmat.min(dim=1).values < tau).float().mean().item()
-                                comp = (dmat.min(dim=0).values < tau).float().mean().item()
-                                acc_means.append(acc)
-                                comp_means.append(comp)
+                                acc_means.append(d_pred_to_gt.mean().item())
+                                acc_meds.append(d_pred_to_gt.median().item())
+                                comp_means.append(d_gt_to_pred.mean().item())
+                                comp_meds.append(d_gt_to_pred.median().item())
+                                B = pr.shape[0]
+                                H, W = gt_pts.shape[-3:-1]
+                                pr_grid = pr.reshape(B, H, W, 3)
+                                gt_grid = gt_world.reshape(B, H, W, 3)
+                                dx_pr = pr_grid[:, :, 1:, :] - pr_grid[:, :, :-1, :]
+                                dy_pr = pr_grid[:, 1:, :, :] - pr_grid[:, :-1, :, :]
+                                dx_gt = gt_grid[:, :, 1:, :] - gt_grid[:, :, :-1, :]
+                                dy_gt = gt_grid[:, 1:, :, :] - gt_grid[:, :-1, :, :]
+                                nx_pr = torch.linalg.cross(dx_pr[:, 1:, :, :], dy_pr[:, :, 1:, :], dim=-1)
+                                nx_gt = torch.linalg.cross(dx_gt[:, 1:, :, :], dy_gt[:, :, 1:, :], dim=-1)
+                                n_pr = torch.nn.functional.normalize(nx_pr, dim=-1)
+                                n_gt = torch.nn.functional.normalize(nx_gt, dim=-1)
+                                cos = (n_pr * n_gt).sum(dim=-1).clamp(-1, 1)
+                                cos = cos.reshape(-1)
+                                nc_means.append(cos.mean().item())
+                                nc_meds.append(cos.median().item())
                     except Exception:
                         pass
                 pr_conf = pred_vi.get("conf", None) if pred_vi is not None else None
@@ -920,9 +941,17 @@ def test_one_epoch(
             if pts3d_chamfer_l2s:
                 metric_logger.update(pts3d_chamfer_l2=float(np.mean(pts3d_chamfer_l2s)))
             if acc_means:
-                metric_logger.update(pts3d_acc=float(np.mean(acc_means)))
+                metric_logger.update(pts3d_acc_mean=float(np.mean(acc_means)))
+            if acc_meds:
+                metric_logger.update(pts3d_acc_med=float(np.mean(acc_meds)))
             if comp_means:
-                metric_logger.update(pts3d_comp=float(np.mean(comp_means)))
+                metric_logger.update(pts3d_comp_mean=float(np.mean(comp_means)))
+            if comp_meds:
+                metric_logger.update(pts3d_comp_med=float(np.mean(comp_meds)))
+            if nc_means:
+                metric_logger.update(pts3d_nc_mean=float(np.mean(nc_means)))
+            if nc_meds:
+                metric_logger.update(pts3d_nc_med=float(np.mean(nc_meds)))
             if conf_means:
                 metric_logger.update(conf_mean=float(np.mean(conf_means)))
             if track_conf_means:
