@@ -1125,18 +1125,17 @@ def vis_and_cat(
 
 def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
     ret_dict = {}
-    gt_img_list = [[] for _ in range(max(1, num_imgs_vis))]
-    pred_img_list = [[] for _ in range(max(1, num_imgs_vis))]
+    gt_img_list = [[] for _ in range(num_imgs_vis)]
+    pred_img_list = [[] for _ in range(num_imgs_vis)]
 
-    cross_gt_depth_list = [[] for _ in range(max(1, num_imgs_vis))]
+    cross_gt_depth_list = [[] for _ in range(num_imgs_vis)]
     cross_pred_depth_list = [[] for _ in range(num_imgs_vis)]
 
-
-    cross_view_conf_list = [[] for _ in range(max(1, num_imgs_vis))]
+    cross_view_conf_list = [[] for _ in range(num_imgs_vis)]
     cross_view_conf_exits = False
 
-    img_mask_list = [[] for _ in range(max(1, num_imgs_vis))]
-    ray_mask_list = [[] for _ in range(max(1, num_imgs_vis))]
+    img_mask_list = [[] for _ in range(num_imgs_vis)]
+    ray_mask_list = [[] for _ in range(num_imgs_vis)]
 
     if num_views > 30:
         stride = 5
@@ -1148,28 +1147,25 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
         stride = 1
     for i in range(0, num_views, stride):
         gt_key = f"gt_img{i+1}"
-        pred_key = f"pred_rgb_{i+1}"
-        has_gt_img = gt_key in loss_details
-        has_pred_img = pred_key in loss_details
-        cross_pred_depths = loss_details.get(f"pred_depth_{i+1}")
-        cross_gt_depths = loss_details.get(f"gt_depth_{i+1}")
-        if cross_gt_depths is None or cross_pred_depths is None:
-            # skip this view if depths are missing
-            continue
-        n_vis = num_imgs_vis if num_imgs_vis and num_imgs_vis > 0 else cross_pred_depths.shape[0]
-        cross_pred_depths = cross_pred_depths[:n_vis].detach().cpu()
-        cross_gt_depths = cross_gt_depths.to(cross_pred_depths.device)[:n_vis].detach().cpu()
-        if has_gt_img:
-            gt_imgs = 0.5 * (loss_details[gt_key] + 1)[:n_vis].detach().cpu()
-        else:
-            gt_imgs = colorize(cross_gt_depths)
+        gt_imgs = 0.5 * (loss_details[gt_key] + 1)[:num_imgs_vis].detach().cpu()
         width = gt_imgs.shape[2]
-        if has_pred_img:
-            pred_imgs = 0.5 * (loss_details[pred_key] + 1)[:n_vis].detach().cpu()
+        pred_key = f"pred_rgb_{i+1}"
+        if pred_key in loss_details:
+            pred_imgs = 0.5 * (loss_details[pred_key] + 1)[:num_imgs_vis].detach().cpu()
         else:
-            pred_imgs = colorize(cross_pred_depths)
+            pred_imgs = gt_imgs
         gt_img_list = batch_append(gt_img_list, gt_imgs.unbind(dim=0))
         pred_img_list = batch_append(pred_img_list, pred_imgs.unbind(dim=0))
+
+        cross_pred_depths = (
+            loss_details[f"pred_depth_{i+1}"][:num_imgs_vis].detach().cpu()
+        )
+        cross_gt_depths = (
+            loss_details[f"gt_depth_{i+1}"]
+            .to(gt_imgs.device)[:num_imgs_vis]
+            .detach()
+            .cpu()
+        )
         cross_pred_depth_list = batch_append(
             cross_pred_depth_list, cross_pred_depths.unbind(dim=0)
         )
@@ -1178,38 +1174,27 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
         )
 
         if f"conf_{i+1}" in loss_details:
-            cross_view_conf = loss_details[f"conf_{i+1}"][:n_vis].detach().cpu()
+            cross_view_conf = loss_details[f"conf_{i+1}"][:num_imgs_vis].detach().cpu()
             cross_view_conf_list = batch_append(
                 cross_view_conf_list, cross_view_conf.unbind(dim=0)
             )
             cross_view_conf_exits = True
 
-        if f"img_mask_{i+1}" in loss_details:
-            img_mask_list = batch_append(
-                img_mask_list,
-                loss_details[f"img_mask_{i+1}"][:n_vis].detach().cpu().unbind(dim=0),
-            )
-        else:
-            zeros = torch.zeros((n_vis, gt_imgs.shape[1], gt_imgs.shape[2]))
-            img_mask_list = batch_append(img_mask_list, zeros.unbind(dim=0))
-        if f"ray_mask_{i+1}" in loss_details:
-            ray_mask_list = batch_append(
-                ray_mask_list,
-                loss_details[f"ray_mask_{i+1}"][:n_vis].detach().cpu().unbind(dim=0),
-            )
-        else:
-            zeros = torch.zeros((n_vis, gt_imgs.shape[1], gt_imgs.shape[2]))
-            ray_mask_list = batch_append(ray_mask_list, zeros.unbind(dim=0))
+        img_mask_list = batch_append(
+            img_mask_list,
+            loss_details[f"img_mask_{i+1}"][:num_imgs_vis].detach().cpu().unbind(dim=0),
+        )
+        ray_mask_list = batch_append(
+            ray_mask_list,
+            loss_details[f"ray_mask_{i+1}"][:num_imgs_vis].detach().cpu().unbind(dim=0),
+        )
 
-    # each element in the list is [H, num_views * W, (3)], the size of the list is num_imgs_vis
-    if any(len(sub) == 0 for sub in gt_img_list):
-        return {}
-    gt_img_list = [torch.cat(sublist, dim=1) if len(sublist) > 0 else torch.zeros(1) for sublist in gt_img_list]
-    pred_img_list = [torch.cat(sublist, dim=1) if len(sublist) > 0 else torch.zeros(1) for sublist in pred_img_list]
+    gt_img_list = [torch.cat(sublist, dim=1) for sublist in gt_img_list]
+    pred_img_list = [torch.cat(sublist, dim=1) for sublist in pred_img_list]
     cross_pred_depth_list = [
-        torch.cat(sublist, dim=1) if len(sublist) > 0 else torch.zeros(1) for sublist in cross_pred_depth_list
+        torch.cat(sublist, dim=1) for sublist in cross_pred_depth_list
     ]
-    cross_gt_depth_list = [torch.cat(sublist, dim=1) if len(sublist) > 0 else torch.zeros(1) for sublist in cross_gt_depth_list]
+    cross_gt_depth_list = [torch.cat(sublist, dim=1) for sublist in cross_gt_depth_list]
 
     cross_view_conf_list = (
         [torch.cat(sublist, dim=1) for sublist in cross_view_conf_list]
@@ -1217,28 +1202,22 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
         else []
     )
 
-    # each elment in the list is [num_views,], the size of the list is num_imgs_vis
-    img_mask_list = [torch.stack(sublist, dim=0) if len(sublist) > 0 else torch.zeros(1) for sublist in img_mask_list]
-    ray_mask_list = [torch.stack(sublist, dim=0) if len(sublist) > 0 else torch.zeros(1) for sublist in ray_mask_list]
+    img_mask_list = [torch.stack(sublist, dim=0) for sublist in img_mask_list]
+    ray_mask_list = [torch.stack(sublist, dim=0) for sublist in ray_mask_list]
 
     ray_indicator = gen_mask_indicator(
         img_mask_list, ray_mask_list, len(img_mask_list[0]), 30, width
     )
 
-    # normalize is_metric to list
-    if isinstance(is_metric, (bool, int, float, torch.Tensor)):
-        is_metric_list = [bool(is_metric)] * max(1, num_imgs_vis)
-    else:
-        is_metric_list = is_metric
-    for i in range(max(1, num_imgs_vis)):
+    for i in range(num_imgs_vis):
         out = vis_and_cat(
             gt_img_list[i],
             pred_img_list[i],
             cross_gt_depth_list[i],
             cross_pred_depth_list[i],
-            cross_view_conf_list[i],
+            cross_view_conf_list[i] if cross_view_conf_exits else torch.zeros_like(cross_gt_depth_list[i]),
             ray_indicator[i],
-            is_metric_list[i],
+            is_metric[i] if isinstance(is_metric, (list, tuple)) else is_metric,
         )
         ret_dict[f"imgs_{i}"] = out
     return ret_dict
