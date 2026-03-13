@@ -416,6 +416,7 @@ def train(args):
     save_final_model(accelerator, args, args.epochs, model, best_so_far=best_so_far)
     if accelerator.is_main_process:
         plot_all_metrics(args.output_dir)
+        plot_view_metrics(args.output_dir, getattr(args, "modality", "rgb"), getattr(args, "num_test_views", 0))
 
 
 def save_final_model(accelerator, args, epoch, model_without_ddp, best_so_far=None):
@@ -480,6 +481,99 @@ def plot_all_metrics(output_dir):
         plt.savefig(os.path.join(outdir, f"{safe_key}.png"))
         plt.close()
 
+def plot_view_metrics(output_dir, modality, num_views):
+    import json
+    import os
+    import numpy as np
+    mpath = os.path.join(output_dir, "metric_view.txt")
+    if not os.path.exists(mpath):
+        return
+    def view_type(v, modality):
+        if modality == "rgb":
+            return "RGB"
+        if modality == "event":
+            return "event"
+        if modality == "rgb_first_event":
+            return "RGB" if v == 0 else "event"
+        if modality == "rgb_event_loop":
+            return "RGB" if (v % 2 == 0) else "event"
+        return "RGB"
+    wanted = ["auc30", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "depth_absrel", "depth_delta_125"]
+    data = []
+    with open(mpath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            data.append(obj)
+    if not data:
+        return
+    prefixes = []
+    for obj in data:
+        for k in obj.keys():
+            if k != "epoch":
+                prefixes.append(k)
+    prefixes = sorted(list(set(prefixes)))
+    base = os.path.join(output_dir, "visualize", "metrics_views")
+    os.makedirs(base, exist_ok=True)
+    for prefix in prefixes:
+        series = {}
+        for obj in data:
+            ep = obj.get("epoch")
+            vals = obj.get(prefix, {})
+            for m in wanted:
+                for v in range(1, (num_views or 0) + 1):
+                    key = f"{m}_v{v}"
+                    if key in vals and isinstance(ep, (int, float)):
+                        series.setdefault(m, {}).setdefault(v, []).append((ep, float(vals[key])))
+        for m, by_view in series.items():
+            if not by_view:
+                continue
+            plt.figure(figsize=(8, 4))
+            for v, pts in sorted(by_view.items()):
+                pts = sorted(pts, key=lambda x: x[0])
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                typ = view_type(v - 1, modality)
+                lbl = f"v{v} ({typ})"
+                plt.plot(xs, ys, marker="o", linewidth=2, label=lbl)
+            plt.xlabel("epoch")
+            plt.ylabel(m)
+            plt.title(f"{prefix} - {m}")
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+            safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{m}.png"
+            plt.tight_layout()
+            plt.savefig(os.path.join(base, safe))
+            plt.close()
+        # paired plots: mean & med in同一图（左右子图）
+        paired = [("acc_mean", "acc_med", "acc"), ("comp_mean", "comp_med", "comp"), ("nc_mean", "nc_med", "nc")]
+        for m_mean, m_med, name in paired:
+            if m_mean in series and m_med in series:
+                fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=False)
+                for ax, mkey, title_suffix in zip(axes, [m_mean, m_med], ["Mean", "Med"]):
+                    by_view = series[mkey]
+                    for v, pts in sorted(by_view.items()):
+                        pts = sorted(pts, key=lambda x: x[0])
+                        xs = [p[0] for p in pts]
+                        ys = [p[1] for p in pts]
+                        typ = view_type(v - 1, modality)
+                        lbl = f"v{v} ({typ})"
+                        ax.plot(xs, ys, marker="o", linewidth=2, label=lbl)
+                    ax.set_xlabel("epoch")
+                    ax.set_ylabel(mkey)
+                    ax.set_title(f"{title_suffix}")
+                    ax.grid(True, alpha=0.3)
+                    ax.legend()
+                fig.suptitle(f"{prefix} - {name} (Mean/Med)")
+                fig.tight_layout()
+                safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{name}_pair.png"
+                fig.savefig(os.path.join(base, safe))
+                plt.close(fig)
 
 def build_dataset(dataset, batch_size, num_workers, accelerator, test=False, fixed_length=False):
     split = ["Train", "Test"][test]
@@ -760,6 +854,23 @@ def test_one_epoch(
     ):
         data_loader.batch_sampler.batch_sampler.set_epoch(0)
 
+    # per-view aggregation across the whole epoch
+    per_view_metrics = {
+        "depth_absrel": {},
+        "depth_delta_125": {},
+        "auc30": {},
+        "acc_mean": {},
+        "acc_med": {},
+        "comp_mean": {},
+        "comp_med": {},
+        "nc_mean": {},
+        "nc_med": {},
+    }
+    def _agg(metric_name, vi, val):
+        if val is None:
+            return
+        per_view_metrics[metric_name].setdefault(vi, []).append(float(val))
+
     for _, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, accelerator, header)
     ):
@@ -883,6 +994,8 @@ def test_one_epoch(
                         depth_delta_125s.append(d125)
                         depth_delta_1252s.append(d1252)
                         depth_delta_1253s.append(d1253)
+                        _agg("depth_absrel", vi, rel)
+                        _agg("depth_delta_125", vi, d125)
                 gt_pose = view.get("camera_pose", None)
                 pr_pose = pred_vi.get("camera_pose", None) if pred_vi is not None else None
                 if gt_pose is not None and isinstance(gt_pose, torch.Tensor) and pr_pose is not None and isinstance(pr_pose, torch.Tensor):
@@ -900,9 +1013,12 @@ def test_one_epoch(
                         terr = torch.linalg.norm(tp - tg, dim=1).mean().item()
                         pose_rot_degs.append(ang)
                         pose_trans_errs.append(terr)
+                        _agg("pose_rot_deg", vi, ang)
+                        _agg("pose_trans_err", vi, terr)
                         ths = torch.linspace(0, 30, steps=31, device=pp.device)
                         auc = (ang <= ths).float().mean().item()
                         pose_auc30s.append(auc)
+                        _agg("auc30", vi, auc)
                     elif pp.ndim == 2 and pp.shape[-1] == 7:
                         t = pp[:, :3]
                         q = pp[:, 3:]
@@ -968,6 +1084,10 @@ def test_one_epoch(
                                 acc_meds.append(d_pred_to_gt.median().item())
                                 comp_means.append(d_gt_to_pred.mean().item())
                                 comp_meds.append(d_gt_to_pred.median().item())
+                                _agg("acc_mean", vi, d_pred_to_gt.mean().item())
+                                _agg("acc_med", vi, d_pred_to_gt.median().item())
+                                _agg("comp_mean", vi, d_gt_to_pred.mean().item())
+                                _agg("comp_med", vi, d_gt_to_pred.median().item())
                                 B = pr.shape[0]
                                 H, W = gt_pts.shape[-3:-1]
                                 pr_grid = pr.reshape(B, H, W, 3)
@@ -984,6 +1104,8 @@ def test_one_epoch(
                                 cos = cos.reshape(-1)
                                 nc_means.append(cos.mean().item())
                                 nc_meds.append(cos.median().item())
+                                _agg("nc_mean", vi, cos.mean().item())
+                                _agg("nc_med", vi, cos.median().item())
                     except Exception:
                         pass
                 pr_conf = pred_vi.get("conf", None) if pred_vi is not None else None
@@ -994,8 +1116,10 @@ def test_one_epoch(
                     tvis = pred_vi.get("vis", None)
                     if isinstance(tconf, torch.Tensor):
                         track_conf_means.append(tconf.mean().item())
+                        _agg("track_conf_mean", vi, tconf.mean().item())
                     if isinstance(tvis, torch.Tensor):
                         track_vis_ratios.append(tvis.float().mean().item())
+                        _agg("track_vis_ratio", vi, tvis.float().mean().item())
             if depth_absrels:
                 metric_logger.update(depth_absrel=float(np.mean(depth_absrels)))
             if depth_rmses:
@@ -1047,6 +1171,24 @@ def test_one_epoch(
         for k, meter in metric_logger.meters.items()
         for tag, attr in aggs
     }
+    # write per-view metrics (paper-aligned subset) to metric_view.txt on main process
+    try:
+        if accelerator.is_main_process and hasattr(args, "output_dir"):
+            outp = os.path.join(args.output_dir, "metric_view.txt")
+            line = {"epoch": epoch}
+            # compute per-view means; keep only: AUC@30, (Acc/Comp/NC)x(Mean/Med), AbsRel, delta<1.25
+            view_dict = {}
+            for mname, mvals in per_view_metrics.items():
+                for vi, arr in mvals.items():
+                    if not arr:
+                        continue
+                    key = f"{mname}_v{vi+1}"
+                    view_dict[key] = float(np.mean(arr))
+            line[prefix] = view_dict
+            with open(outp, "a", encoding="utf-8") as f:
+                f.write(json.dumps(line) + "\n")
+    except Exception:
+        pass
 
     if log_writer is not None:
         for name, val in results.items():
