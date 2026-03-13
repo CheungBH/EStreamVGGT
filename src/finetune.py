@@ -415,8 +415,9 @@ def train(args):
 
     save_final_model(accelerator, args, args.epochs, model, best_so_far=best_so_far)
     if accelerator.is_main_process:
-        plot_all_metrics(args.output_dir)
+        # plot_all_metrics(args.output_dir)
         plot_view_metrics(args.output_dir, getattr(args, "modality", "rgb"), getattr(args, "num_test_views", 0))
+        plot_category_dashboards(args.output_dir)
 
 
 def save_final_model(accelerator, args, epoch, model_without_ddp, best_so_far=None):
@@ -574,6 +575,98 @@ def plot_view_metrics(output_dir, modality, num_views):
                 safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{name}_pair.png"
                 fig.savefig(os.path.join(base, safe))
                 plt.close(fig)
+
+def plot_category_dashboards(output_dir):
+    import json
+    import os
+    import numpy as np
+    mpath = os.path.join(output_dir, "metric.txt")
+    if not os.path.exists(mpath):
+        return
+    data = []
+    with open(mpath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            data.append(obj)
+    if not data:
+        return
+    prefixes = []
+    for obj in data:
+        for k in obj.keys():
+            if k != "epoch":
+                prefixes.append(k)
+    prefixes = sorted(list(set(prefixes)))
+    cat_map = {
+        "depth_error": [
+            "depth_absrel_avg", "depth_absrel_med",
+            "depth_delta_125_avg", "depth_delta_125_med",
+            "depth_rmse_avg", "depth_rmse_med",
+            "depth_log_rmse_avg", "depth_log_rmse_med",
+            "depth_si_rmse_avg", "depth_si_rmse_med",
+        ],
+        "pose": [
+            "pose_rot_deg", "pose_trans_err", "pose_auc30",
+        ],
+        "geometry": [
+            "pts3d_acc_mean", "pts3d_acc_med",
+            "pts3d_comp_mean", "pts3d_comp_med",
+            "pts3d_nc_mean", "pts3d_nc_med",
+            "pts3d_chamfer_l1", "pts3d_chamfer_l2",
+        ],
+        "confidence_visibility": [
+            "conf_mean", "track_conf_mean", "track_vis_ratio",
+        ],
+        "loss": [
+            "loss_avg", "loss_med", "pose_loss_avg", "pose_loss_med",
+        ],
+    }
+    outdir = os.path.join(output_dir, "visualize", "metrics_dashboards")
+    os.makedirs(outdir, exist_ok=True)
+    def collect_series(prefix, keys):
+        series = {}
+        for obj in data:
+            ep = obj.get("epoch")
+            vals = obj.get(prefix, {})
+            for k in keys:
+                if k in vals and isinstance(ep, (int, float)):
+                    series.setdefault(k, []).append((ep, float(vals[k])))
+        for k in list(series.keys()):
+            series[k] = sorted(series[k], key=lambda x: x[0])
+        return series
+    def plot_cat(prefix, cname, keys):
+        series = collect_series(prefix, keys)
+        if not series:
+            return
+        n = len(series)
+        cols = 2 if n > 1 else 1
+        rows = int(np.ceil(n / cols))
+        fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 3.2 * rows), squeeze=False)
+        axes = axes.flatten()
+        for ax, (k, pts) in zip(axes, series.items()):
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            ax.plot(xs, ys, marker="o", linewidth=2)
+            ax.set_title(k)
+            ax.set_xlabel("epoch")
+            ax.set_ylabel(k)
+            ax.grid(True, alpha=0.3)
+        # hide extra axes
+        for j in range(len(series), len(axes)):
+            axes[j].axis("off")
+        fig.suptitle(f"{prefix} - {cname}")
+        fig.tight_layout()
+        safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{cname}.png"
+        fig.savefig(os.path.join(outdir, safe))
+        plt.close(fig)
+    for prefix in prefixes:
+        for cname, keys in cat_map.items():
+            plot_cat(prefix, cname, keys)
 
 def build_dataset(dataset, batch_size, num_workers, accelerator, test=False, fixed_length=False):
     split = ["Train", "Test"][test]
