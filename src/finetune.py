@@ -50,6 +50,7 @@ import builtins
 import shutil
 import imageio.v2 as iio
 import matplotlib.pyplot as plt
+import plot
 
 from accelerate import Accelerator
 from accelerate import DistributedDataParallelKwargs, InitProcessGroupKwargs
@@ -415,9 +416,8 @@ def train(args):
 
     save_final_model(accelerator, args, args.epochs, model, best_so_far=best_so_far)
     if accelerator.is_main_process:
-        # plot_all_metrics(args.output_dir)
-        plot_view_metrics(args.output_dir, getattr(args, "modality", "rgb"), getattr(args, "num_test_views", 0))
-        plot_category_dashboards(args.output_dir)
+        plot.plot_view_metrics(args.output_dir, getattr(args, "modality", "rgb"), getattr(args, "num_test_views", 0))
+        plot.plot_category_dashboards(args.output_dir)
 
 
 def save_final_model(accelerator, args, epoch, model_without_ddp, best_so_far=None):
@@ -960,6 +960,8 @@ def test_one_epoch(
         "nc_med": {},
     }
     def _agg(metric_name, vi, val):
+        if metric_name not in per_view_metrics:
+            return
         if val is None:
             return
         per_view_metrics[metric_name].setdefault(vi, []).append(float(val))
