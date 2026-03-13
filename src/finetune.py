@@ -56,7 +56,13 @@ from accelerate import DistributedDataParallelKwargs, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from datetime import timedelta
 import torch.multiprocessing
-from accelerate.utils import FSDPPlugin
+try:
+    from accelerate.utils import FullyShardedDataParallelPlugin as FSDPPlugin
+except Exception:
+    try:
+        from accelerate.utils import FSDPPlugin  # type: ignore
+    except Exception:
+        FSDPPlugin = None  # type: ignore
 
 from vggt.models.vggt import VGGT
 
@@ -130,13 +136,16 @@ def train(args):
     else:
         fsdp_plugin = None
         if use_fsdp:
-            fsdp_plugin = FSDPPlugin(
-                sharding_strategy="full_shard",
-                cpu_offload=False,
-                auto_wrap_policy=None,
-                limit_all_gathers=True,
-                sync_module_states=True,
-            )
+            if FSDPPlugin is not None:
+                fsdp_plugin = FSDPPlugin(
+                    sharding_strategy="FULL_SHARD",
+                    cpu_offload=False,
+                    auto_wrap_policy=None,
+                    limit_all_gathers=True,
+                    sync_module_states=True,
+                )
+            else:
+                printer.warning("FSDP not available in current accelerate. Falling back to DDP.")
         accelerator = Accelerator(
             gradient_accumulation_steps=args.accum_iter,
             mixed_precision=mp,
