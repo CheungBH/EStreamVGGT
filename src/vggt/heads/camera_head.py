@@ -97,6 +97,12 @@ class CameraHead(nn.Module):
 
         # Extract the camera tokens
         pose_tokens = tokens[:, :, 0].float()
+        try:
+            target_dtype = self.token_norm.weight.dtype
+        except Exception:
+            target_dtype = torch.float32
+        if pose_tokens.dtype != target_dtype:
+            pose_tokens = pose_tokens.to(target_dtype)
         pose_tokens = self.token_norm(pose_tokens)
 
         pred_pose_enc_list = self.trunk_fn(pose_tokens, num_iterations)
