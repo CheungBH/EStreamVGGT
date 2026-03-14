@@ -250,51 +250,76 @@ def train(args):
         del ckpt  # in case it occupies memory
 
     # freeze
-    printer.info("Freezing patch embedding and positional encoding parameters...")
+    printer.info("Configuring trainable/frozen parameters...")
+    total_params = sum(p.numel() for _, p in model.named_parameters())
+    use_fsdp_flag = bool(getattr(args, "use_fsdp", False) or os.environ.get("USE_FSDP", "").lower() in ("1", "true", "yes"))
+    freeze_names = set()
+    def collect_freeze_names():
+        names = set()
+        if hasattr(model, 'aggregator') and hasattr(model.aggregator, 'patch_embed'):
+            for n, _p in model.aggregator.patch_embed.named_parameters():
+                names.add(f"aggregator.patch_embed.{n}")
+        if hasattr(model, 'aggregator') and hasattr(model.aggregator, 'camera_token'):
+            names.add("aggregator.camera_token")
+        if hasattr(model, 'aggregator') and hasattr(model.aggregator, 'register_token'):
+            names.add("aggregator.register_token")
+        # heads
+        for head_name in ("camera_head", "depth_head", "track_head"):
+            if hasattr(model, head_name):
+                for n, _p in getattr(model, head_name).named_parameters(recurse=True):
+                    names.add(f"{head_name}.{n}")
+        return names
+    freeze_names = collect_freeze_names()
     frozen_params = 0
-    total_params = 0
-
     frozen_param_names = []
-
-    for name, param in model.named_parameters():
-        total_params += param.numel()
-        param.requires_grad = True
-
-    if hasattr(model, 'aggregator') and hasattr(model.aggregator, 'patch_embed'):
-        for param in model.aggregator.patch_embed.parameters():
-            if param.requires_grad:
-                param.requires_grad = False
-
-    if hasattr(model, 'aggregator') and hasattr(model.aggregator, 'camera_token'):
-        model.aggregator.camera_token.requires_grad = False
-
-    if hasattr(model, 'aggregator') and hasattr(model.aggregator, 'register_token'):
-        model.aggregator.register_token.requires_grad = False
-
-    model.camera_head.requires_grad = False
-    model.depth_head.requires_grad = False
-    model.track_head.requires_grad = False
-
-    
-
-
-    for name, p in model.named_parameters():
-        if not p.requires_grad:
-            frozen_params += p.numel()
-            frozen_param_names.append(name)
-
-    printer.info(
-        f"Frozen {frozen_params:,} parameters out of {total_params:,} total parameters. ({frozen_params / total_params:.2%})")
-    printer.info(
-        f"Trainable parameters: {total_params - frozen_params:,} ({(total_params - frozen_params) / total_params:.2%})")
-    if frozen_param_names:
+    if not use_fsdp_flag:
+        # DDP/DP 模式直接 requires_grad=False
+        for name, p in model.named_parameters():
+            if name in freeze_names:
+                if p.requires_grad:
+                    p.requires_grad = False
+                frozen_params += p.numel()
+                frozen_param_names.append(name)
         printer.info(
-            f"Example frozen parameters: {', '.join(frozen_param_names[:5])}{'...' if len(frozen_param_names) > 5 else ''}")
+            f"Frozen {frozen_params:,} parameters out of {total_params:,} total parameters. ({(frozen_params / total_params) if total_params else 0:.2%})")
+        printer.info(
+            f"Trainable parameters: {total_params - frozen_params:,} ({((total_params - frozen_params) / total_params) if total_params else 0:.2%})")
+        if frozen_param_names:
+            printer.info(
+                f"Example frozen parameters: {', '.join(frozen_param_names[:5])}{'...' if len(frozen_param_names) > 5 else ''}")
+    else:
+        # FSDP 模式避免混合 requires_grad，改为在优化器里设置 lr_scale=0
+        for name, p in model.named_parameters():
+            # 保持 requires_grad=True，后续通过优化器分组置零
+            pass
+        printer.info("FSDP detected: will keep requires_grad=True and use optimizer lr_scale=0 for frozen params.")
 
 
 
     # following timm: set wd as 0 for bias and norm layers
     param_groups = misc.get_parameter_groups(model, args.weight_decay)
+    if use_fsdp_flag and freeze_names:
+        name_of = {id(p): n for n, p in model.named_parameters()}
+        new_groups = []
+        for g in param_groups:
+            train_params = []
+            frozen_params_list = []
+            for p in g["params"]:
+                n = name_of.get(id(p))
+                if n in freeze_names:
+                    frozen_params_list.append(p)
+                else:
+                    train_params.append(p)
+            if train_params:
+                ng = dict(g)
+                ng["params"] = train_params
+                new_groups.append(ng)
+            if frozen_params_list:
+                fg = dict(g)
+                fg["params"] = frozen_params_list
+                fg["lr_scale"] = 0.0
+                new_groups.append(fg)
+        param_groups = new_groups
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     # print(optimizer)
     loss_scaler = NativeScaler(accelerator=accelerator)
