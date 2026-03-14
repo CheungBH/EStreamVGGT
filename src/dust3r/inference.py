@@ -104,10 +104,10 @@ def loss_of_one_batch(
                 knowledge = teacher.inference(batch, query_pts)
                 gts, batch = knowledge.ress, knowledge.views
 
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.amp.autocast("cuda", enabled=False):
                 loss = criterion(gts, preds) if criterion is not None else None
         else:
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.amp.autocast("cuda", enabled=False):
                 loss = criterion(batch, preds) if criterion is not None else None
 
     result = dict(views=batch, pred=preds, loss=loss)
