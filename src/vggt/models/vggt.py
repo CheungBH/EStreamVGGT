@@ -78,27 +78,29 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         aggregated_tokens_list, patch_start_idx = self.aggregator(images)
         predictions = {}
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast("cuda", enabled=False):
+            tokens_fp32 = [t.float() for t in aggregated_tokens_list]
+            images_fp32 = images.float()
             if self.camera_head is not None:
-                pose_enc_list = self.camera_head(aggregated_tokens_list)
+                pose_enc_list = self.camera_head(tokens_fp32)
                 predictions["pose_enc"] = pose_enc_list[-1]  # pose encoding of the last iteration
 
             if self.depth_head is not None:
                 depth, depth_conf = self.depth_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                    tokens_fp32, images=images_fp32, patch_start_idx=patch_start_idx
                 )
                 predictions["depth"] = depth
                 predictions["depth_conf"] = depth_conf
 
             if self.point_head is not None:
                 pts3d, pts3d_conf = self.point_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                    tokens_fp32, images=images_fp32, patch_start_idx=patch_start_idx
                 )
                 predictions["world_points"] = pts3d
                 predictions["world_points_conf"] = pts3d_conf
             if self.track_head is not None and query_points is not None:
                 track_list, vis, conf = self.track_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx,
+                    tokens_fp32, images=images_fp32, patch_start_idx=patch_start_idx,
                     query_points=query_points
                 )
                 predictions["track"] = track_list[-1]  # track of the last iteration
