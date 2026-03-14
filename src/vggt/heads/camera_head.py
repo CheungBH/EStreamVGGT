@@ -103,7 +103,23 @@ class CameraHead(nn.Module):
             target_dtype = torch.float32
         if pose_tokens.dtype != target_dtype:
             pose_tokens = pose_tokens.to(target_dtype)
-        pose_tokens = self.token_norm(pose_tokens)
+        try:
+            pose_tokens = self.token_norm(pose_tokens)
+        except RuntimeError as e:
+            if "expected scalar type" in str(e):
+                w = self.token_norm.weight if hasattr(self.token_norm, "weight") else None
+                b = self.token_norm.bias if hasattr(self.token_norm, "bias") else None
+                w = w.to(pose_tokens.dtype) if w is not None else None
+                b = b.to(pose_tokens.dtype) if b is not None else None
+                pose_tokens = F.layer_norm(
+                    pose_tokens,
+                    self.token_norm.normalized_shape,
+                    w,
+                    b,
+                    self.token_norm.eps,
+                )
+            else:
+                raise
 
         pred_pose_enc_list = self.trunk_fn(pose_tokens, num_iterations)
         return pred_pose_enc_list
