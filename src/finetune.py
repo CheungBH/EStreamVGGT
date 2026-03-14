@@ -138,13 +138,23 @@ def train(args):
         fsdp_plugin = None
         if use_fsdp:
             if FSDPPlugin is not None:
-                fsdp_plugin = FSDPPlugin(
-                    sharding_strategy="FULL_SHARD",
-                    cpu_offload=False,
-                    auto_wrap_policy=None,
-                    limit_all_gathers=True,
-                    sync_module_states=True,
-                )
+                try:
+                    fsdp_plugin = FSDPPlugin(
+                        sharding_strategy="FULL_SHARD",
+                        cpu_offload=False,
+                        auto_wrap_policy=None,
+                        limit_all_gathers=True,
+                        sync_module_states=True,
+                        use_orig_params=True,
+                    )
+                except TypeError:
+                    fsdp_plugin = FSDPPlugin(
+                        sharding_strategy="FULL_SHARD",
+                        cpu_offload=False,
+                        auto_wrap_policy=None,
+                        limit_all_gathers=True,
+                        sync_module_states=True,
+                    )
             else:
                 printer.warning("FSDP not available in current accelerate. Falling back to DDP.")
         accelerator = Accelerator(
