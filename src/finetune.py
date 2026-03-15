@@ -59,6 +59,7 @@ from datetime import timedelta
 import torch.multiprocessing
 
 from vggt.models.vggt import VGGT
+from vggt.lora import apply_lora_to_aggregator, mark_only_lora_trainable
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
@@ -202,6 +203,34 @@ def train(args):
     # model
     printer.info("Loading model")
     model = VGGT()
+
+    # LoRA injection on aggregator trunk if requested
+    lora_cfg = getattr(args, "lora", None)
+    lora_enable = False
+    lora_r = 8
+    lora_alpha = 8
+    lora_update_base = False
+    try:
+        import os as _os
+        lora_enable = bool(getattr(lora_cfg, "enable", False)) or _os.environ.get("LORA_ENABLE", "").lower() in ("1", "true", "yes")
+        if getattr(lora_cfg, "r", None) is not None:
+            lora_r = int(lora_cfg.r)
+        elif _os.environ.get("LORA_R"):
+            lora_r = int(_os.environ.get("LORA_R"))
+        if getattr(lora_cfg, "alpha", None) is not None:
+            lora_alpha = int(lora_cfg.alpha)
+        elif _os.environ.get("LORA_ALPHA"):
+            lora_alpha = int(_os.environ.get("LORA_ALPHA"))
+        lora_update_base = bool(getattr(lora_cfg, "update_base", False)) or _os.environ.get("LORA_UPDATE_BASE", "").lower() in ("1","true","yes")
+        lora_target = getattr(lora_cfg, "targets", None) or _os.environ.get("LORA_TARGETS", "") or "all"
+    except Exception:
+        lora_target = "all"
+    if lora_enable:
+        printer.info(f"Applying LoRA on aggregator trunk (r={lora_r}, alpha={lora_alpha}, target={lora_target})")
+        apply_lora_to_aggregator(model.aggregator, r=lora_r, alpha=lora_alpha, target=lora_target)
+        if not lora_update_base:
+            mark_only_lora_trainable(model.aggregator)
+            printer.info("LoRA-only trainable on aggregator; base weights frozen")
 
     # model: PreTrainedModel = eval(args.model)
     printer.info(f"All model parameters: {sum(p.numel() for p in model.parameters())}")
