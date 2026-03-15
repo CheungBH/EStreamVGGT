@@ -144,6 +144,16 @@ def train(args):
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
+    # plot-only fast path: regenerate figures from existing metric files without training/eval
+    if getattr(args, "plot_only", False):
+        try:
+            plot.plot_view_metrics(args.output_dir, getattr(args, "modality", "rgb"), getattr(args, "num_test_views", 0))
+            plot.plot_category_dashboards(args.output_dir)
+            printer.info("Regenerated plots from existing metrics under: %s", args.output_dir)
+        except Exception as e:
+            printer.error("Plot-only path failed: %s", str(e))
+        return
+
     if accelerator.is_main_process:
         dst_dir = save_current_code(outdir=args.output_dir)
         printer.info(f"Saving current code to {dst_dir}")
