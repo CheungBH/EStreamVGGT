@@ -1045,9 +1045,12 @@ def test_one_epoch(
                             m = mask
                         else:
                             m = torch.ones_like(g[..., 0], dtype=torch.bool)
-                        eps = torch.tensor(1e-6, device=g.device, dtype=g.dtype)
-                        rel = (pd - g).abs() / torch.maximum(g.abs(), eps)
-                        rel = rel[m].mean().item()
+                        depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
+                        valid = m & (g > depth_min) & (pd > depth_min)
+                        if valid.any():
+                            rel = ((pd - g).abs() / g.clamp_min(depth_min)).masked_select(valid).mean().item()
+                        else:
+                            rel = float("nan")
                         rmse = torch.sqrt(((pd - g).square())[m].mean()).item()
                         # log RMSE
                         pd_safe = torch.maximum(pd, eps)
@@ -1246,14 +1249,23 @@ def test_one_epoch(
         for k, meter in metric_logger.meters.items()
         for tag, attr in aggs
     }
-    # write per-view metrics (paper-aligned subset) to metric_view.txt on main process
+    # write per-view metrics (paper subset) to metric_view.txt on main process
     try:
         if accelerator.is_main_process and hasattr(args, "output_dir"):
             outp = os.path.join(args.output_dir, "metric_view.txt")
             line = {"epoch": epoch}
             # compute per-view means; keep only: AUC@30, (Acc/Comp/NC)x(Mean/Med), AbsRel, delta<1.25
             view_dict = {}
+            paper_keep = {
+                "auc30",
+                "acc_mean", "acc_med",
+                "comp_mean", "comp_med",
+                "nc_mean", "nc_med",
+                "depth_absrel", "depth_delta_125",
+            }
             for mname, mvals in per_view_metrics.items():
+                if mname not in paper_keep:
+                    continue
                 for vi, arr in mvals.items():
                     if not arr:
                         continue
