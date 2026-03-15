@@ -290,6 +290,79 @@ def train(args):
         optimizer, model, data_loader_train
     )
 
+    # eval-only fast path: load checkpoint and run tests to regenerate metrics/files
+    if getattr(args, "eval_only", False) or getattr(args, "eval_sweep", False):
+        def load_ckpt_into_model(ckpt_path):
+            unwrapped = accelerator.unwrap_model(model)
+            obj = torch.load(ckpt_path, map_location=device)
+            sd = obj["model"] if isinstance(obj, dict) and "model" in obj else obj
+            unwrapped.load_state_dict(sd, strict=False)
+            ep = obj["epoch"] if isinstance(obj, dict) and "epoch" in obj else args.start_epoch
+            return ep
+        ckpt_list = []
+        if getattr(args, "eval_sweep", False):
+            base = getattr(args, "ckpt_dir", None) or args.output_dir
+            pats = []
+            for name in os.listdir(base):
+                if name.startswith("checkpoint-") and name.endswith(".pth"):
+                    try:
+                        ep = int(name.split("-")[1].split(".")[0])
+                    except Exception:
+                        ep = None
+                    ckpt_list.append((ep, os.path.join(base, name)))
+            def key_fn(t):
+                e, path = t
+                if e is not None:
+                    return e
+                try:
+                    obj = torch.load(path, map_location="cpu")
+                    return obj.get("epoch", -1) if isinstance(obj, dict) else -1
+                except Exception:
+                    return -1
+            ckpt_list = sorted(list({p for p in ckpt_list}), key=key_fn)
+        else:
+            if getattr(args, "resume", None):
+                ckpt_list = [(None, args.resume)]
+            else:
+                ckpt_list = []
+        for ep_hint, ckpt_path in ckpt_list:
+            try:
+                ep = load_ckpt_into_model(ckpt_path)
+            except Exception:
+                continue
+            test_stats = {}
+            for test_name, testset in data_loader_test.items():
+                stats = test_one_epoch(
+                    model,
+                    None,
+                    test_criterion,
+                    testset,
+                    accelerator,
+                    device,
+                    ep_hint if ep_hint is not None else ep,
+                    args=args,
+                    log_writer=None,
+                    prefix=test_name,
+                )
+                test_stats[test_name] = stats
+            if accelerator.is_main_process:
+                log_stats = dict(epoch=ep_hint if ep_hint is not None else ep, **{f"train_{k}": v for k, v in {}.items()})
+                for test_name in data_loader_test:
+                    if test_name in test_stats:
+                        log_stats.update({test_name + "_" + k: v for k, v in test_stats[test_name].items()})
+                with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_stats) + "\n")
+                metrics_line = {"epoch": ep_hint if ep_hint is not None else ep}
+                for test_name in data_loader_test:
+                    if test_name in test_stats:
+                        metrics_line[test_name] = test_stats[test_name]
+                with open(os.path.join(args.output_dir, "metric.txt"), mode="a", encoding="utf-8") as f:
+                    f.write(json.dumps(metrics_line) + "\n")
+        if accelerator.is_main_process:
+            plot.plot_view_metrics(args.output_dir, getattr(args, "modality", "rgb"), getattr(args, "num_test_views", 0))
+            plot.plot_category_dashboards(args.output_dir)
+        return
+
     def write_log_stats(epoch, train_stats, test_stats):
         if accelerator.is_main_process:
             if log_writer is not None:
