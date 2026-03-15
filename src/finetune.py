@@ -1449,7 +1449,7 @@ def test_one_epoch(
             args.num_test_views,
             is_metric=batch[0]["is_metric"],
         )
-        save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict)
+        save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict, num_views=args.num_test_views, modality=args.modality)
 
     del loss_details, loss_value, batch
     torch.cuda.empty_cache()
@@ -1504,7 +1504,22 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric=False):
     return {"pred_depth": pred_stack, "gt_depth": gt_stack}
 
 
-def save_vis_imgs(outdir, prefix, epoch, imgs_stacked_dict, step=None):
+from PIL import Image, ImageDraw
+
+
+def _view_type_label(idx: int, modality: str) -> str:
+    if modality == "rgb":
+        return "RGB"
+    if modality == "event":
+        return "event"
+    if modality == "rgb_first_event":
+        return "RGB" if idx == 0 else "event"
+    if modality == "rgb_event_loop":
+        return "RGB" if (idx % 2 == 0) else "event"
+    return "RGB"
+
+
+def save_vis_imgs(outdir, prefix, epoch, imgs_stacked_dict, step=None, num_views: int = None, modality: str = "rgb"):
     base = os.path.join(outdir, "visualize", f"epoch_{epoch}", str(prefix))
     os.makedirs(base, exist_ok=True)
     for name, imgs_stacked in imgs_stacked_dict.items():
@@ -1512,8 +1527,33 @@ def save_vis_imgs(outdir, prefix, epoch, imgs_stacked_dict, step=None):
         if arr.dtype != np.uint8:
             arr = np.clip(arr, 0, 1)
             arr = (arr * 255).astype(np.uint8)
+        # annotate rows/columns
+        try:
+            H, W, C = arr.shape
+            header_h = 36
+            left_w = 140
+            canvas = Image.new("RGB", (W + left_w, H + header_h), (0, 0, 0))
+            img = Image.fromarray(arr)
+            canvas.paste(img, (left_w, header_h))
+            draw = ImageDraw.Draw(canvas)
+            # column labels
+            if num_views and num_views > 0:
+                col_w = W // num_views
+                for v in range(num_views):
+                    x0 = left_w + v * col_w + 6
+                    lbl = f"v{v+1} ({_view_type_label(v, modality)})"
+                    draw.text((x0, 8), lbl, fill=(255, 255, 255))
+            # row labels (fixed 6 bands as composed in vis_and_cat)
+            row_names = ["Ray mask", "GT RGB", "Pred RGB", "GT Depth", "Pred Depth", "Conf"]
+            seg_h = H // 6
+            for i, rn in enumerate(row_names):
+                y = header_h + i * seg_h + seg_h // 2 - 6
+                draw.text((8, y), rn, fill=(255, 255, 255))
+            out_img = np.array(canvas)
+        except Exception:
+            out_img = arr
         fname = f"{name}.png" if step is None else f"{name}_step{step}.png"
-        iio.imwrite(os.path.join(base, fname), arr)
+        iio.imwrite(os.path.join(base, fname), out_img)
 
 
 def vis_and_cat(
