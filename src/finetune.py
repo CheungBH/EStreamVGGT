@@ -225,12 +225,7 @@ def train(args):
         lora_target = getattr(lora_cfg, "targets", None) or _os.environ.get("LORA_TARGETS", "") or "all"
     except Exception:
         lora_target = "all"
-    if lora_enable:
-        printer.info(f"Applying LoRA on aggregator trunk (r={lora_r}, alpha={lora_alpha}, target={lora_target})")
-        apply_lora_to_aggregator(model.aggregator, r=lora_r, alpha=lora_alpha, target=lora_target)
-        if not lora_update_base:
-            mark_only_lora_trainable(model.aggregator)
-            printer.info("LoRA-only trainable on aggregator; base weights frozen")
+    # defer LoRA injection until after checkpoint loading
 
     # model: PreTrainedModel = eval(args.model)
     printer.info(f"All model parameters: {sum(p.numel() for p in model.parameters())}")
@@ -299,6 +294,14 @@ def train(args):
     if frozen_param_names:
         printer.info(
             f"Example frozen parameters: {', '.join(frozen_param_names[:5])}{'...' if len(frozen_param_names) > 5 else ''}")
+
+    # now inject LoRA after loading checkpoints and applying freezes
+    if lora_enable:
+        printer.info(f"Applying LoRA on aggregator trunk (r={lora_r}, alpha={lora_alpha}, target={lora_target})")
+        apply_lora_to_aggregator(model.aggregator, r=lora_r, alpha=lora_alpha, target=lora_target)
+        if not lora_update_base:
+            mark_only_lora_trainable(model.aggregator)
+            printer.info("LoRA-only trainable on aggregator; base weights frozen")
 
 
 
