@@ -1504,7 +1504,7 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric=False):
     return {"pred_depth": pred_stack, "gt_depth": gt_stack}
 
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 
 def _view_type_label(idx: int, modality: str) -> str:
@@ -1523,32 +1523,45 @@ def save_vis_imgs(outdir, prefix, epoch, imgs_stacked_dict, step=None, num_views
     base = os.path.join(outdir, "visualize", f"epoch_{epoch}", str(prefix))
     os.makedirs(base, exist_ok=True)
     for name, imgs_stacked in imgs_stacked_dict.items():
-        arr = imgs_stacked.detach().cpu().numpy()
+        row_names = None
+        if isinstance(imgs_stacked, dict) and "image" in imgs_stacked:
+            arr_t = imgs_stacked["image"]
+            row_names = imgs_stacked.get("row_names", None)
+        else:
+            arr_t = imgs_stacked
+        arr = arr_t.detach().cpu().numpy()
         if arr.dtype != np.uint8:
             arr = np.clip(arr, 0, 1)
             arr = (arr * 255).astype(np.uint8)
         # annotate rows/columns
         try:
             H, W, C = arr.shape
-            header_h = 36
-            left_w = 140
+            header_h = 56
+            left_w = 180
             canvas = Image.new("RGB", (W + left_w, H + header_h), (0, 0, 0))
             img = Image.fromarray(arr)
             canvas.paste(img, (left_w, header_h))
             draw = ImageDraw.Draw(canvas)
+            try:
+                font = ImageFont.truetype("DejaVuSans.ttf", size=18)
+            except Exception:
+                font = ImageFont.load_default()
             # column labels
             if num_views and num_views > 0:
                 col_w = W // num_views
                 for v in range(num_views):
-                    x0 = left_w + v * col_w + 6
+                    x0 = left_w + v * col_w + 10
                     lbl = f"v{v+1} ({_view_type_label(v, modality)})"
-                    draw.text((x0, 8), lbl, fill=(255, 255, 255))
-            # row labels (fixed 6 bands as composed in vis_and_cat)
-            row_names = ["Ray mask", "GT RGB", "Pred RGB", "GT Depth", "Pred Depth", "Conf"]
-            seg_h = H // 6
+                    draw.text((x0, 12), lbl, fill=(255, 255, 255), font=font)
+            # row labels (dynamic rows)
+            if row_names is None:
+                # default to 6行；匹配 vis_and_cat 的拼接顺序
+                row_names = ["Ray mask", "GT RGB", "Pred RGB", "GT Depth", "Pred Depth", "Conf"]
+            n_rows = max(1, len(row_names))
+            seg_h = H // n_rows
             for i, rn in enumerate(row_names):
-                y = header_h + i * seg_h + seg_h // 2 - 6
-                draw.text((8, y), rn, fill=(255, 255, 255))
+                y = header_h + i * seg_h + seg_h // 2 - 10
+                draw.text((12, y), rn, fill=(255, 255, 255), font=font)
             out_img = np.array(canvas)
         except Exception:
             out_img = arr
@@ -1685,7 +1698,9 @@ def get_vis_imgs_new(loss_details, num_imgs_vis, num_views, is_metric):
             indicators[i],
             is_metric if not isinstance(is_metric, (list, tuple)) else is_metric[i],
         )
-        ret_dict[f"imgs_{i}"] = out
+        # 动态行名（与 vis_and_cat 的拼接顺序一致）
+        row_names = ["Ray mask", "GT RGB", "Pred RGB", "GT Depth", "Pred Depth", "Conf"]
+        ret_dict[f"imgs_{i}"] = {"image": out, "row_names": row_names}
     return ret_dict
 
 
