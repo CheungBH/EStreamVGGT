@@ -1119,35 +1119,49 @@ def test_one_epoch(
                 if gt_depth is not None and isinstance(gt_depth, torch.Tensor) and pr_depth is not None and isinstance(pr_depth, torch.Tensor):
                     pd = pr_depth
                     g = gt_depth
+                    # squeeze trailing channel if present
                     if pd.ndim == 4 and pd.shape[-1] == 1:
                         pd = pd.squeeze(-1)
+                    if pd.ndim == 4 and pd.shape[1] == 1:
+                        pd = pd.squeeze(1)
                     if g.ndim == 4 and g.shape[-1] == 1:
                         g = g.squeeze(-1)
-                    if pd.shape[-2:] == g.shape[-2:]:
-                        if mask is not None and isinstance(mask, torch.Tensor) and mask.shape[-2:] == g.shape[-2:]:
-                            m = mask
-                        else:
-                            m = torch.ones_like(g[..., 0], dtype=torch.bool)
-                        depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
-                        valid = m & (g > depth_min) & (pd > depth_min)
-                        if valid.any():
-                            rel = ((pd - g).abs() / g.clamp_min(depth_min)).masked_select(valid).mean().item()
-                        else:
-                            rel = float("nan")
-                        rmse = torch.sqrt(((pd - g).square())[m].mean()).item()
+                    if g.ndim == 4 and g.shape[1] == 1:
+                        g = g.squeeze(1)
+                    # resize prediction to GT resolution if needed
+                    if pd.shape[-2:] != g.shape[-2:]:
+                        _pd = pd
+                        if _pd.ndim == 3:
+                            _pd = _pd.unsqueeze(1)
+                        _pd = torch.nn.functional.interpolate(_pd.float(), size=g.shape[-2:], mode="bilinear", align_corners=True)
+                        pd = _pd.squeeze(1)
+                    # build mask with correct shape
+                    if isinstance(mask, torch.Tensor) and mask.shape[-2:] == g.shape[-2:]:
+                        m = mask.bool()
+                        if m.ndim == 2:
+                            m = m.unsqueeze(0).expand_as(g)
+                        elif m.ndim == 3 and m.shape != g.shape and m.shape[0] == 1 and g.shape[0] > 1:
+                            m = m.expand_as(g)
+                    else:
+                        m = torch.ones_like(g, dtype=torch.bool)
+                    depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
+                    valid = m & (g > depth_min) & (pd > depth_min)
+                    if valid.any():
+                        rel = ((pd - g).abs() / g.clamp_min(depth_min)).masked_select(valid).mean().item()
+                        rmse = torch.sqrt(((pd - g).square()).masked_select(valid).mean()).item()
                         # log RMSE
-                        pd_safe = torch.maximum(pd, eps)
-                        g_safe = torch.maximum(g, eps)
+                        pd_safe = pd.clamp_min(depth_min)
+                        g_safe = g.clamp_min(depth_min)
                         log_diff = (pd_safe.log() - g_safe.log())
-                        log_rmse = torch.sqrt((log_diff.square())[m].mean()).item()
+                        log_rmse = torch.sqrt((log_diff.square()).masked_select(valid).mean()).item()
                         # scale-invariant RMSE (remove mean of log diff)
-                        mu = log_diff[m].mean()
-                        si_rmse = torch.sqrt(((log_diff - mu).square())[m].mean()).item()
+                        mu = log_diff.masked_select(valid).mean()
+                        si_rmse = torch.sqrt((((log_diff - mu).square()).masked_select(valid)).mean()).item()
                         # delta accuracies
                         ratio = torch.maximum(pd_safe / g_safe, g_safe / pd_safe)
-                        d125 = (ratio[m] < 1.25).float().mean().item()
-                        d1252 = (ratio[m] < 1.25**2).float().mean().item()
-                        d1253 = (ratio[m] < 1.25**3).float().mean().item()
+                        d125 = ratio.masked_select(valid).lt(1.25).float().mean().item()
+                        d1252 = ratio.masked_select(valid).lt(1.25**2).float().mean().item()
+                        d1253 = ratio.masked_select(valid).lt(1.25**3).float().mean().item()
                         depth_absrels.append(rel)
                         depth_rmses.append(rmse)
                         depth_log_rmses.append(log_rmse)
