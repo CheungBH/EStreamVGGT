@@ -1257,8 +1257,8 @@ def test_one_epoch(
                     _agg("depth_absrel", vi, rel)
                     _agg("depth_delta_125", vi, d125)
                 # pose metrics (convert 7D to 3x4 if needed)
-                gp = _pose_to_3x4(view["camera_pose"], device, model_dtype)
-                pp = _pose_to_3x4(pred_vi["camera_pose"], device, model_dtype)
+                gp = _pose_to_3x4(view["camera_pose"], device, model_dtype).view(-1, 3, 4)
+                pp = _pose_to_3x4(pred_vi["camera_pose"], device, model_dtype).view(-1, 3, 4)
                 Rp = pp[:, :3, :3]
                 Rg = gp[:, :3, :3]
                 Rrel = Rp @ Rg.transpose(1, 2)
