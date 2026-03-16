@@ -159,6 +159,36 @@ def train(args):
         dst_dir = save_current_code(outdir=args.output_dir)
         printer.info(f"Saving current code to {dst_dir}")
 
+    # metrics preflight: validate dataset fields without running full eval
+    if getattr(args, "eval_check", False):
+        def _shape(t):
+            try:
+                return list(t.shape)
+            except Exception:
+                return None
+        for test_name, testset in data_loader_test.items():
+            try:
+                batch = next(iter(testset))
+            except Exception:
+                printer.error(f"[{test_name}] cannot fetch a batch")
+                continue
+            ok = True
+            for vi, view in enumerate(batch):
+                cp = view.get("camera_pose", None)
+                K = view.get("camera_intrinsics", None)
+                gd = view.get("depthmap", None)
+                if not (isinstance(cp, torch.Tensor) and (_shape(cp) and (_shape(cp)[-2:] == [3,4] or _shape(cp)[-1] == 7))):
+                    printer.error(f"[{test_name}] view{vi+1} missing/invalid camera_pose shape={_shape(cp)}")
+                    ok = False
+                if not (isinstance(K, torch.Tensor) and (_shape(K) and _shape(K)[-2:] == [3,3])):
+                    printer.error(f"[{test_name}] view{vi+1} missing/invalid camera_intrinsics shape={_shape(K)}")
+                    ok = False
+                if not (isinstance(gd, torch.Tensor) and (_shape(gd) and len(_shape(gd)) in (3,4))):
+                    printer.error(f"[{test_name}] view{vi+1} missing/invalid depthmap shape={_shape(gd)}")
+                    ok = False
+            if ok:
+                printer.info(f"[{test_name}] metrics prerequisites present for all views")
+        return
     # auto resume
     if not args.resume:
         last_ckpt_fname = os.path.join(args.output_dir, f"checkpoint-last.pth")
@@ -1271,7 +1301,22 @@ def test_one_epoch(
                     if not (gp is not None and isinstance(gp, torch.Tensor)):
                         raise RuntimeError("Missing camera pose for geometry metrics")
                     pr = pr_pts3d
-                    gt_pts = depthmap_to_pts3d(depth=gt_depth, pseudo_focal=None)
+                    # ensure gt_depth [B,H,W]
+                    gtd = gt_depth
+                    if gtd.ndim == 4 and gtd.shape[1] == 1:
+                        gtd = gtd.squeeze(1)
+                    if gtd.ndim == 4 and gtd.shape[-1] == 1:
+                        gtd = gtd.squeeze(-1)
+                    B, H, W = gtd.shape[:3]
+                    fu = K[:, 0, 0]
+                    fv = K[:, 1, 1]
+                    cu = K[:, 0, 2]
+                    cv = K[:, 1, 2]
+                    fu_map = fu.view(B, 1, 1).expand(B, H, W)
+                    fv_map = fv.view(B, 1, 1).expand(B, H, W)
+                    pseudo_focal = torch.stack([fu_map, fv_map], dim=1)  # [B,2,H,W]
+                    pp = torch.stack([cu, cv], dim=1)  # [B,2]
+                    gt_pts = depthmap_to_pts3d(depth=gtd, pseudo_focal=pseudo_focal, pp=pp)
                     gt_world = geotrf(gp, gt_pts)
                     pr_flat = pr.reshape(pr.shape[0], -1, 3)
                     gt_flat = gt_world.reshape(gt_world.shape[0], -1, 3)
