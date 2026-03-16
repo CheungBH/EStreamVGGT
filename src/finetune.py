@@ -1122,6 +1122,11 @@ def test_one_epoch(
                 dim=1,
             )
             x = torch.cat([Rp, t[:, :, None]], dim=2)
+        elif x.ndim == 2 and x.shape[-1] == 9:
+            B = x.shape[0]
+            R = x.view(B, 3, 3)
+            t0 = torch.zeros((B, 3, 1), device=x.device, dtype=x.dtype)
+            x = torch.cat([R, t0], dim=2)
         elif x.ndim == 2 and x.shape == torch.Size([3, 4]):
             x = x.unsqueeze(0)
         elif x.ndim == 2 and x.shape == torch.Size([4, 4]):
