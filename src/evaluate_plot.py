@@ -7,6 +7,7 @@ import torch
 from types import SimpleNamespace
 from accelerate import Accelerator
 import matplotlib.pyplot as plt
+import finetune as ft
 from finetune import VGGT, build_dataset, test_one_epoch
 
 
@@ -124,7 +125,10 @@ def main():
         num_test_views=int(getattr(cfg, "num_test_views")),
         modality=str(getattr(cfg, "modality")),
     )
-    criterion = eval(str(getattr(cfg, "test_criterion"))).to(device)
+    crit_expr = str(getattr(cfg, "test_criterion"))
+    if "(" not in crit_expr:
+        crit_expr = f"{crit_expr}()"
+    criterion = eval(crit_expr, ft.__dict__).to(device)
     ep = 1
     for eidx, path in ckpts:
         ckpt = torch.load(path, map_location=device)
