@@ -99,7 +99,7 @@ def main():
     ap.add_argument("--config", type=str, required=True)
     args = ap.parse_args()
     cfg = OmegaConf.load(args.config)
-    folder = os.path.abspath(cfg.folder)
+    folder = os.path.abspath(str(getattr(cfg, "output_dir")))
     ckpts = list_checkpoints(folder)
     if not ckpts:
         raise RuntimeError("no checkpoints found")
@@ -108,7 +108,7 @@ def main():
     out_eval = os.path.join(folder, "evaluate")
     os.makedirs(out_eval, exist_ok=True)
     data_loader_test = build_dataset(
-        cfg.test_dataset,
+        str(getattr(cfg, "test_dataset")),
         int(getattr(cfg, "batch_size", 1)),
         int(getattr(cfg, "num_workers", 2)),
         accelerator=accelerator,
@@ -121,10 +121,10 @@ def main():
         output_dir=out_eval,
         print_freq=int(getattr(cfg, "print_freq", 10)),
         amp=bool(getattr(cfg, "amp", False)),
-        num_test_views=int(cfg.num_test_views),
-        modality=str(cfg.modality),
+        num_test_views=int(getattr(cfg, "num_test_views")),
+        modality=str(getattr(cfg, "modality")),
     )
-    criterion = eval(str(cfg.test_criterion)).to(device)
+    criterion = eval(str(getattr(cfg, "test_criterion"))).to(device)
     ep = 1
     for eidx, path in ckpts:
         ckpt = torch.load(path, map_location=device)
@@ -142,7 +142,7 @@ def main():
             prefix=str(getattr(cfg, "prefix", "eval")),
         )
         ep += 1
-    plot_per_view(out_eval, str(cfg.modality), int(cfg.num_test_views), str(getattr(cfg, "prefix", "eval")))
+    plot_per_view(out_eval, str(getattr(cfg, "modality")), int(getattr(cfg, "num_test_views")), str(getattr(cfg, "prefix", "eval")))
 
 
 if __name__ == "__main__":
