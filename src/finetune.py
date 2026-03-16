@@ -208,11 +208,31 @@ def train(args):
             except Exception:
                 return None
         for test_name, testset in data_loader_test.items():
-            try:
-                batch = next(iter(testset))
-            except Exception:
-                printer.error(f"[{test_name}] cannot fetch a batch")
+            ds = getattr(testset, "dataset", None)
+            if ds is None:
+                printer.error(f"[{test_name}] cannot introspect underlying dataset")
                 continue
+            try:
+                ds_len = len(ds)
+            except Exception:
+                ds_len = None
+            if not ds_len:
+                printer.error(f"[{test_name}] dataset length is 0 or unknown")
+                continue
+            # try direct sample without workers
+            try:
+                sample = ds[0]
+                batch = sample if isinstance(sample, list) else [sample]
+            except Exception as e:
+                printer.error(f"[{test_name}] dataset[0] failed: {type(e).__name__}: {e}")
+                # fallback to no-worker dataloader
+                try:
+                    from torch.utils.data import DataLoader as _DL
+                    tmp_loader = _DL(ds, batch_size=1, shuffle=False, num_workers=0, collate_fn=lambda x: x)
+                    batch = next(iter(tmp_loader))[0]
+                except Exception as e2:
+                    printer.error(f"[{test_name}] cannot fetch a batch: {type(e2).__name__}: {e2}")
+                    continue
             ok = True
             for vi, view in enumerate(batch):
                 cp = view.get("camera_pose", None)
