@@ -117,6 +117,7 @@ def main():
         test=True,
         fixed_length=True,
     )
+    data_loader_test.dataset.set_epoch(0)
     model = VGGT()
     model.to(device)
     simple_args = SimpleNamespace(
