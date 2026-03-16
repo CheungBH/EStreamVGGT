@@ -159,36 +159,6 @@ def train(args):
         dst_dir = save_current_code(outdir=args.output_dir)
         printer.info(f"Saving current code to {dst_dir}")
 
-    # metrics preflight: validate dataset fields without running full eval
-    if getattr(args, "eval_check", False):
-        def _shape(t):
-            try:
-                return list(t.shape)
-            except Exception:
-                return None
-        for test_name, testset in data_loader_test.items():
-            try:
-                batch = next(iter(testset))
-            except Exception:
-                printer.error(f"[{test_name}] cannot fetch a batch")
-                continue
-            ok = True
-            for vi, view in enumerate(batch):
-                cp = view.get("camera_pose", None)
-                K = view.get("camera_intrinsics", None)
-                gd = view.get("depthmap", None)
-                if not (isinstance(cp, torch.Tensor) and (_shape(cp) and (_shape(cp)[-2:] == [3,4] or _shape(cp)[-1] == 7))):
-                    printer.error(f"[{test_name}] view{vi+1} missing/invalid camera_pose shape={_shape(cp)}")
-                    ok = False
-                if not (isinstance(K, torch.Tensor) and (_shape(K) and _shape(K)[-2:] == [3,3])):
-                    printer.error(f"[{test_name}] view{vi+1} missing/invalid camera_intrinsics shape={_shape(K)}")
-                    ok = False
-                if not (isinstance(gd, torch.Tensor) and (_shape(gd) and len(_shape(gd)) in (3,4))):
-                    printer.error(f"[{test_name}] view{vi+1} missing/invalid depthmap shape={_shape(gd)}")
-                    ok = False
-            if ok:
-                printer.info(f"[{test_name}] metrics prerequisites present for all views")
-        return
     # auto resume
     if not args.resume:
         last_ckpt_fname = os.path.join(args.output_dir, f"checkpoint-last.pth")
@@ -229,6 +199,37 @@ def train(args):
         )
         for dataset in args.test_dataset.split("+")
     }
+
+    # metrics preflight: validate dataset fields without running full eval
+    if getattr(args, "eval_check", False):
+        def _shape(t):
+            try:
+                return list(t.shape)
+            except Exception:
+                return None
+        for test_name, testset in data_loader_test.items():
+            try:
+                batch = next(iter(testset))
+            except Exception:
+                printer.error(f"[{test_name}] cannot fetch a batch")
+                continue
+            ok = True
+            for vi, view in enumerate(batch):
+                cp = view.get("camera_pose", None)
+                K = view.get("camera_intrinsics", None)
+                gd = view.get("depthmap", None)
+                if not (isinstance(cp, torch.Tensor) and (_shape(cp) and (_shape(cp)[-2:] == [3,4] or _shape(cp)[-1] == 7))):
+                    printer.error(f"[{test_name}] view{vi+1} missing/invalid camera_pose shape={_shape(cp)}")
+                    ok = False
+                if not (isinstance(K, torch.Tensor) and (_shape(K) and _shape(K)[-2:] == [3,3])):
+                    printer.error(f"[{test_name}] view{vi+1} missing/invalid camera_intrinsics shape={_shape(K)}")
+                    ok = False
+                if not (isinstance(gd, torch.Tensor) and (_shape(gd) and len(_shape(gd)) in (3,4))):
+                    printer.error(f"[{test_name}] view{vi+1} missing/invalid depthmap shape={_shape(gd)}")
+                    ok = False
+            if ok:
+                printer.info(f"[{test_name}] metrics prerequisites present for all views")
+        return
 
     # model
     printer.info("Loading model")
