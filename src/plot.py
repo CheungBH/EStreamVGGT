@@ -83,20 +83,48 @@ def plot_view_metrics(output_dir, modality, num_views):
     os.makedirs(base, exist_ok=True)
     for prefix in prefixes:
         series = {}
+        collected_vals = []
         for obj in data:
             ep = obj.get("epoch")
             vals = obj.get(prefix, {})
+            collected_vals.append(vals)
             for m in wanted:
-                for v in range(1, (num_views or 0) + 1):
+                if num_views and num_views > 0:
+                    v_range = range(1, num_views + 1)
+                else:
+                    vs = []
+                    for k in vals.keys():
+                        if k.startswith(m + "_v"):
+                            try:
+                                vs.append(int(k.split("_v")[-1]))
+                            except Exception:
+                                pass
+                    vmax = max(vs) if vs else 0
+                    v_range = range(1, vmax + 1)
+                for v in v_range:
                     key = f"{m}_v{v}"
-                    if key in vals and isinstance(ep, (int, float)):
-                        series.setdefault(m, {}).setdefault(v, []).append((ep, float(vals[key])))
-        for m, by_view in series.items():
-            if not by_view:
+                    val = vals.get(key, None)
+                    if key in vals and isinstance(ep, (int, float)) and isinstance(val, (int, float)):
+                        series.setdefault(m, {}).setdefault(v, []).append((ep, float(val)))
+        for m in wanted:
+            by_view = series.get(m, {})
+            views_sorted = sorted(by_view.keys())
+            if not views_sorted:
+                # still produce an empty figure with caption
+                plt.figure(figsize=(8, 4))
+                plt.xlabel("epoch")
+                plt.ylabel(m)
+                plt.title(f"{prefix} - {m}")
+                plt.grid(True, alpha=0.3)
+                plt.text(0.5, 0.5, "no data recorded for this metric", ha="center", va="center", transform=plt.gca().transAxes)
+                safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{m}.png"
+                plt.tight_layout()
+                plt.savefig(os.path.join(base, safe))
+                plt.close()
                 continue
             plt.figure(figsize=(8, 4))
-            for v, pts in sorted(by_view.items()):
-                pts = sorted(pts, key=lambda x: x[0])
+            for v in views_sorted:
+                pts = sorted(by_view[v], key=lambda x: x[0])
                 xs = [p[0] for p in pts]
                 ys = [p[1] for p in pts]
                 typ = view_type(v - 1, modality)

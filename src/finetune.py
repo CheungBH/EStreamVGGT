@@ -1261,60 +1261,62 @@ def test_one_epoch(
                         pose_auc30s.append(auc)
                 pr_pts3d = pred_vi.get("pts3d_in_other_view", None) if pred_vi is not None else None
                 if pr_pts3d is not None and isinstance(pr_pts3d, torch.Tensor):
-                    try:
-                        from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
-                        K = view.get("camera_intrinsics", None)
-                        gp = view.get("camera_pose", None)
-                        if gt_depth is not None and isinstance(gt_depth, torch.Tensor) and K is not None and isinstance(K, torch.Tensor) and gp is not None and isinstance(gp, torch.Tensor):
-                            pr = pr_pts3d
-                            gt_pts = depthmap_to_pts3d(depth=gt_depth, pseudo_focal=None)
-                            gt_world = geotrf(gp, gt_pts)
-                            pr_flat = pr.reshape(pr.shape[0], -1, 3)
-                            gt_flat = gt_world.reshape(gt_world.shape[0], -1, 3)
-                            if mask is not None and isinstance(mask, torch.Tensor):
-                                m_flat = mask.reshape(mask.shape[0], -1)
-                            else:
-                                m_flat = torch.ones(pr_flat.shape[:2], dtype=torch.bool, device=pr_flat.device)
-                            pr_sel = pr_flat[m_flat]
-                            gt_sel = gt_flat[m_flat]
-                            if pr_sel.numel() > 0 and gt_sel.numel() > 0:
-                                pr_sel = pr_sel.view(-1, 3)
-                                gt_sel = gt_sel.view(-1, 3)
-                                dmat = torch.cdist(pr_sel.unsqueeze(0), gt_sel.unsqueeze(0), p=2).squeeze(0)
-                                d_pred_to_gt = dmat.min(dim=1).values
-                                d_gt_to_pred = dmat.min(dim=0).values
-                                l1 = d_pred_to_gt.mean().item()
-                                l2 = torch.sqrt(d_pred_to_gt.square().mean()).item()
-                                pts3d_chamfer_l1s.append(l1)
-                                pts3d_chamfer_l2s.append(l2)
-                                acc_means.append(d_pred_to_gt.mean().item())
-                                acc_meds.append(d_pred_to_gt.median().item())
-                                comp_means.append(d_gt_to_pred.mean().item())
-                                comp_meds.append(d_gt_to_pred.median().item())
-                                _agg("acc_mean", vi, d_pred_to_gt.mean().item())
-                                _agg("acc_med", vi, d_pred_to_gt.median().item())
-                                _agg("comp_mean", vi, d_gt_to_pred.mean().item())
-                                _agg("comp_med", vi, d_gt_to_pred.median().item())
-                                B = pr.shape[0]
-                                H, W = gt_pts.shape[-3:-1]
-                                pr_grid = pr.reshape(B, H, W, 3)
-                                gt_grid = gt_world.reshape(B, H, W, 3)
-                                dx_pr = pr_grid[:, :, 1:, :] - pr_grid[:, :, :-1, :]
-                                dy_pr = pr_grid[:, 1:, :, :] - pr_grid[:, :-1, :, :]
-                                dx_gt = gt_grid[:, :, 1:, :] - gt_grid[:, :, :-1, :]
-                                dy_gt = gt_grid[:, 1:, :, :] - gt_grid[:, :-1, :, :]
-                                nx_pr = torch.linalg.cross(dx_pr[:, 1:, :, :], dy_pr[:, :, 1:, :], dim=-1)
-                                nx_gt = torch.linalg.cross(dx_gt[:, 1:, :, :], dy_gt[:, :, 1:, :], dim=-1)
-                                n_pr = torch.nn.functional.normalize(nx_pr, dim=-1)
-                                n_gt = torch.nn.functional.normalize(nx_gt, dim=-1)
-                                cos = (n_pr * n_gt).sum(dim=-1).clamp(-1, 1)
-                                cos = cos.reshape(-1)
-                                nc_means.append(cos.mean().item())
-                                nc_meds.append(cos.median().item())
-                                _agg("nc_mean", vi, cos.mean().item())
-                                _agg("nc_med", vi, cos.median().item())
-                    except Exception:
-                        pass
+                    from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
+                    K = view.get("camera_intrinsics", None)
+                    gp = view.get("camera_pose", None)
+                    if not (gt_depth is not None and isinstance(gt_depth, torch.Tensor)):
+                        raise RuntimeError("Missing gt depth for geometry metrics")
+                    if not (K is not None and isinstance(K, torch.Tensor)):
+                        raise RuntimeError("Missing camera intrinsics for geometry metrics")
+                    if not (gp is not None and isinstance(gp, torch.Tensor)):
+                        raise RuntimeError("Missing camera pose for geometry metrics")
+                    pr = pr_pts3d
+                    gt_pts = depthmap_to_pts3d(depth=gt_depth, pseudo_focal=None)
+                    gt_world = geotrf(gp, gt_pts)
+                    pr_flat = pr.reshape(pr.shape[0], -1, 3)
+                    gt_flat = gt_world.reshape(gt_world.shape[0], -1, 3)
+                    if mask is not None and isinstance(mask, torch.Tensor):
+                        m_flat = mask.reshape(mask.shape[0], -1)
+                    else:
+                        m_flat = torch.ones(pr_flat.shape[:2], dtype=torch.bool, device=pr_flat.device)
+                    pr_sel = pr_flat[m_flat]
+                    gt_sel = gt_flat[m_flat]
+                    if pr_sel.numel() > 0 and gt_sel.numel() > 0:
+                        pr_sel = pr_sel.view(-1, 3)
+                        gt_sel = gt_sel.view(-1, 3)
+                        dmat = torch.cdist(pr_sel.unsqueeze(0), gt_sel.unsqueeze(0), p=2).squeeze(0)
+                        d_pred_to_gt = dmat.min(dim=1).values
+                        d_gt_to_pred = dmat.min(dim=0).values
+                        l1 = d_pred_to_gt.mean().item()
+                        l2 = torch.sqrt(d_pred_to_gt.square().mean()).item()
+                        pts3d_chamfer_l1s.append(l1)
+                        pts3d_chamfer_l2s.append(l2)
+                        acc_means.append(d_pred_to_gt.mean().item())
+                        acc_meds.append(d_pred_to_gt.median().item())
+                        comp_means.append(d_gt_to_pred.mean().item())
+                        comp_meds.append(d_gt_to_pred.median().item())
+                        _agg("acc_mean", vi, d_pred_to_gt.mean().item())
+                        _agg("acc_med", vi, d_pred_to_gt.median().item())
+                        _agg("comp_mean", vi, d_gt_to_pred.mean().item())
+                        _agg("comp_med", vi, d_gt_to_pred.median().item())
+                        B = pr.shape[0]
+                        H, W = gt_pts.shape[-3:-1]
+                        pr_grid = pr.reshape(B, H, W, 3)
+                        gt_grid = gt_world.reshape(B, H, W, 3)
+                        dx_pr = pr_grid[:, :, 1:, :] - pr_grid[:, :, :-1, :]
+                        dy_pr = pr_grid[:, 1:, :, :] - pr_grid[:, :-1, :, :]
+                        dx_gt = gt_grid[:, :, 1:, :] - gt_grid[:, :, :-1, :]
+                        dy_gt = gt_grid[:, 1:, :, :] - gt_grid[:, :-1, :, :]
+                        nx_pr = torch.linalg.cross(dx_pr[:, 1:, :, :], dy_pr[:, :, 1:, :], dim=-1)
+                        nx_gt = torch.linalg.cross(dx_gt[:, 1:, :, :], dy_gt[:, :, 1:, :], dim=-1)
+                        n_pr = torch.nn.functional.normalize(nx_pr, dim=-1)
+                        n_gt = torch.nn.functional.normalize(nx_gt, dim=-1)
+                        cos = (n_pr * n_gt).sum(dim=-1).clamp(-1, 1)
+                        cos = cos.reshape(-1)
+                        nc_means.append(cos.mean().item())
+                        nc_meds.append(cos.median().item())
+                        _agg("nc_mean", vi, cos.mean().item())
+                        _agg("nc_med", vi, cos.median().item())
                 pr_conf = pred_vi.get("conf", None) if pred_vi is not None else None
                 if pr_conf is not None and isinstance(pr_conf, torch.Tensor):
                     conf_means.append(pr_conf.mean().item())
