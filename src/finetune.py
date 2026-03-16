@@ -16,6 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Sized
 from itertools import islice
+from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -1072,26 +1073,7 @@ def test_one_epoch(
     if log_writer is not None:
         printer.info("log_dir: {}".format(log_writer.log_dir))
 
-    if hasattr(data_loader, "dataset") and hasattr(data_loader.dataset, "set_epoch"):
-        data_loader.dataset.set_epoch(0)
-        try:
-            from dust3r.datasets.base.easy_dataset import ResizedDataset
-            if isinstance(data_loader.dataset, ResizedDataset):
-                import numpy as np
-                rng = np.random.default_rng(42)
-                base_len = len(data_loader.dataset.dataset)
-                new_size = len(data_loader.dataset)
-                perm = rng.permutation(base_len)
-                shuffled_idxs = np.concatenate([perm] * (1 + (new_size - 1) // base_len))
-                data_loader.dataset._idxs_mapping = shuffled_idxs[: new_size]
-        except Exception:
-            pass
-    if (
-        hasattr(data_loader, "batch_sampler")
-        and hasattr(data_loader.batch_sampler, "batch_sampler")
-        and hasattr(data_loader.batch_sampler.batch_sampler, "set_epoch")
-    ):
-        data_loader.batch_sampler.batch_sampler.set_epoch(0)
+ 
 
     # per-view aggregation across the whole epoch
     per_view_metrics = {
@@ -1115,40 +1097,30 @@ def test_one_epoch(
     for _, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, accelerator, header)
     ):
-        if isinstance(batch, dict) and "img" in batch:
-            model_dtype = next(model.parameters()).dtype
-            batch["img"] = batch["img"].to(device=device, dtype=model_dtype)
-        elif isinstance(batch, list) and all(isinstance(v, dict) and "img" in v for v in batch):
-            model_dtype = next(model.parameters()).dtype
-            for view in batch:
-                view["img"] = view["img"].to(device=device, dtype=model_dtype)
-                if "camera_pose" in view:
-                    x = view["camera_pose"]
+        model_dtype = next(model.parameters()).dtype
+        if not (isinstance(batch, list) and all(isinstance(v, dict) and "img" in v for v in batch)):
+            raise RuntimeError("Expected batch as list[dict] with 'img' keys")
+        for view in batch:
+            view["img"] = view["img"].to(device=device, dtype=model_dtype)
+            for k in ("camera_pose", "camera_intrinsics", "depthmap"):
+                if k not in view:
+                    raise RuntimeError(f"Expected key '{k}' in view")
+                x = view[k]
+                if isinstance(x, np.ndarray):
+                    x = torch.from_numpy(x)
+                view[k] = x.to(device=device, dtype=model_dtype)
+            if "pts3d" in view:
+                x = view["pts3d"]
+                if isinstance(x, np.ndarray):
+                    x = torch.from_numpy(x)
+                view["pts3d"] = x.to(device=device, dtype=model_dtype)
+            for k in ("valid_mask", "sky_mask", "img_mask", "ray_mask"):
+                if k in view:
+                    x = view[k]
                     if isinstance(x, np.ndarray):
                         x = torch.from_numpy(x)
-                    view["camera_pose"] = x.to(device=device, dtype=model_dtype)
-                if "camera_intrinsics" in view:
-                    x = view["camera_intrinsics"]
-                    if isinstance(x, np.ndarray):
-                        x = torch.from_numpy(x)
-                    view["camera_intrinsics"] = x.to(device=device, dtype=model_dtype)
-                if "depthmap" in view:
-                    x = view["depthmap"]
-                    if isinstance(x, np.ndarray):
-                        x = torch.from_numpy(x)
-                    view["depthmap"] = x.to(device=device, dtype=model_dtype)
-                if "pts3d" in view:
-                    x = view["pts3d"]
-                    if isinstance(x, np.ndarray):
-                        x = torch.from_numpy(x)
-                    view["pts3d"] = x.to(device=device, dtype=model_dtype)
-                for k in ("valid_mask", "sky_mask", "img_mask", "ray_mask"):
-                    if k in view:
-                        x = view[k]
-                        if isinstance(x, np.ndarray):
-                            x = torch.from_numpy(x)
-                        if isinstance(x, torch.Tensor):
-                            view[k] = x.to(device=device, dtype=torch.bool)
+                    if isinstance(x, torch.Tensor):
+                        view[k] = x.to(device=device, dtype=torch.bool)
         result = loss_of_one_batch(
             batch,
             model,
@@ -1186,260 +1158,182 @@ def test_one_epoch(
             nc_means = []
             nc_meds = []
             for vi, view in enumerate(batch):
-                pred_vi = None
-                if isinstance(preds, list) and len(preds) > vi:
-                    pred_vi = preds[vi]
-                elif isinstance(preds, dict):
-                    pred_vi = preds
-                gt_depth = view.get("depthmap", None)
-                mask = view.get("ray_mask", None)
-                if mask is None:
-                    mask = view.get("valid_mask", None)
-                if pred_vi is not None:
-                    pr_depth = pred_vi.get("depth", None)
+                pred_vi = preds[vi]
+                # depth metrics
+                gt_depth = view["depthmap"]
+                mask = view["ray_mask"].bool()
+                pr_depth = pred_vi["depth"]
+                pd = pr_depth
+                g = gt_depth
+                if pd.ndim == 4 and pd.shape[1] == 1:
+                    pd = pd.squeeze(1)
+                if pd.ndim == 4 and pd.shape[-1] == 1:
+                    pd = pd.squeeze(-1)
+                if g.ndim == 4 and g.shape[1] == 1:
+                    g = g.squeeze(1)
+                if g.ndim == 4 and g.shape[-1] == 1:
+                    g = g.squeeze(-1)
+                if pd.shape[-2:] != g.shape[-2:]:
+                    pd = torch.nn.functional.interpolate(pd.unsqueeze(1).float(), size=g.shape[-2:], mode="bilinear", align_corners=True).squeeze(1)
+                if mask.ndim == 2:
+                    m = mask.unsqueeze(0).expand_as(g)
+                elif mask.ndim == 3:
+                    m = mask
                 else:
-                    pr_depth = None
-                if gt_depth is not None and isinstance(gt_depth, torch.Tensor) and pr_depth is not None and isinstance(pr_depth, torch.Tensor):
-                    pd = pr_depth
-                    g = gt_depth
-                    # squeeze trailing channel if present
-                    if pd.ndim == 4 and pd.shape[-1] == 1:
-                        pd = pd.squeeze(-1)
-                    if pd.ndim == 4 and pd.shape[1] == 1:
-                        pd = pd.squeeze(1)
-                    if g.ndim == 4 and g.shape[-1] == 1:
-                        g = g.squeeze(-1)
-                    if g.ndim == 4 and g.shape[1] == 1:
-                        g = g.squeeze(1)
-                    # resize prediction to GT resolution if needed
-                    if pd.shape[-2:] != g.shape[-2:]:
-                        _pd = pd
-                        if _pd.ndim == 3:
-                            _pd = _pd.unsqueeze(1)
-                        _pd = torch.nn.functional.interpolate(_pd.float(), size=g.shape[-2:], mode="bilinear", align_corners=True)
-                        pd = _pd.squeeze(1)
-                    # build mask with correct shape
-                    if isinstance(mask, torch.Tensor) and mask.shape[-2:] == g.shape[-2:]:
-                        m = mask.bool()
-                        if m.ndim == 2:
-                            m = m.unsqueeze(0).expand_as(g)
-                        elif m.ndim == 3 and m.shape != g.shape and m.shape[0] == 1 and g.shape[0] > 1:
-                            m = m.expand_as(g)
-                    else:
-                        m = torch.ones_like(g, dtype=torch.bool)
-                    depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
-                    valid = m & (g > depth_min) & (pd > depth_min)
-                    if valid.any():
-                        rel = ((pd - g).abs() / g.clamp_min(depth_min)).masked_select(valid).mean().item()
-                        rmse = torch.sqrt(((pd - g).square()).masked_select(valid).mean()).item()
-                        # log RMSE
-                        pd_safe = pd.clamp_min(depth_min)
-                        g_safe = g.clamp_min(depth_min)
-                        log_diff = (pd_safe.log() - g_safe.log())
-                        log_rmse = torch.sqrt((log_diff.square()).masked_select(valid).mean()).item()
-                        # scale-invariant RMSE (remove mean of log diff)
-                        mu = log_diff.masked_select(valid).mean()
-                        si_rmse = torch.sqrt((((log_diff - mu).square()).masked_select(valid)).mean()).item()
-                        # delta accuracies
-                        ratio = torch.maximum(pd_safe / g_safe, g_safe / pd_safe)
-                        d125 = ratio.masked_select(valid).lt(1.25).float().mean().item()
-                        d1252 = ratio.masked_select(valid).lt(1.25**2).float().mean().item()
-                        d1253 = ratio.masked_select(valid).lt(1.25**3).float().mean().item()
-                        depth_absrels.append(rel)
-                        depth_rmses.append(rmse)
-                        depth_log_rmses.append(log_rmse)
-                        depth_si_rmses.append(si_rmse)
-                        depth_delta_125s.append(d125)
-                        depth_delta_1252s.append(d1252)
-                        depth_delta_1253s.append(d1253)
-                        _agg("depth_absrel", vi, rel)
-                        _agg("depth_delta_125", vi, d125)
-                gt_pose = view.get("camera_pose", None)
-                pr_pose = pred_vi.get("camera_pose", None) if pred_vi is not None else None
-                if gt_pose is not None and isinstance(gt_pose, torch.Tensor) and pr_pose is not None and isinstance(pr_pose, torch.Tensor):
-                    gp = gt_pose
-                    pp = pr_pose
-                    if pp.ndim == 3 and pp.shape[-2:] == (3, 4):
-                        Rp = pp[:, :3, :3]
-                        Rg = gp[:, :3, :3]
-                        Rrel = Rp @ Rg.transpose(1, 2)
-                        tr = Rrel[:, 0, 0] + Rrel[:, 1, 1] + Rrel[:, 2, 2]
-                        val = torch.clamp((tr - 1) / 2, -1.0, 1.0)
-                        ang = torch.rad2deg(torch.acos(val)).mean().item()
-                        tp = pp[:, :3, 3]
-                        tg = gp[:, :3, 3]
-                        terr = torch.linalg.norm(tp - tg, dim=1).mean().item()
-                        pose_rot_degs.append(ang)
-                        pose_trans_errs.append(terr)
-                        _agg("pose_rot_deg", vi, ang)
-                        _agg("pose_trans_err", vi, terr)
-                        ths = torch.linspace(0, 30, steps=31, device=pp.device)
-                        auc = (ang <= ths).float().mean().item()
-                        pose_auc30s.append(auc)
-                        _agg("auc30", vi, auc)
-                    elif pp.ndim == 2 and pp.shape[-1] == 7:
-                        t = pp[:, :3]
-                        q = pp[:, 3:]
-                        qw, qx, qy, qz = q[:, 3], q[:, 0], q[:, 1], q[:, 2]
-                        R11 = 1 - 2 * (qy * qy + qz * qz)
-                        R12 = 2 * (qx * qy - qz * qw)
-                        R13 = 2 * (qx * qz + qy * qw)
-                        R21 = 2 * (qx * qy + qz * qw)
-                        R22 = 1 - 2 * (qx * qx + qz * qz)
-                        R23 = 2 * (qy * qz - qx * qw)
-                        R31 = 2 * (qx * qz - qy * qw)
-                        R32 = 2 * (qy * qz + qx * qw)
-                        R33 = 1 - 2 * (qx * qx + qy * qy)
-                        Rp = torch.stack(
-                            [
-                                torch.stack([R11, R12, R13], dim=-1),
-                                torch.stack([R21, R22, R23], dim=-1),
-                                torch.stack([R31, R32, R33], dim=-1),
-                            ],
-                            dim=1,
-                        )
-                        Rg = gp[:, :3, :3]
-                        Rrel = Rp @ Rg.transpose(1, 2)
-                        tr = Rrel[:, 0, 0] + Rrel[:, 1, 1] + Rrel[:, 2, 2]
-                        val = torch.clamp((tr - 1) / 2, -1.0, 1.0)
-                        ang = torch.rad2deg(torch.acos(val)).mean().item()
-                        tg = gp[:, :3, 3]
-                        terr = torch.linalg.norm(t - tg, dim=1).mean().item()
-                        pose_rot_degs.append(ang)
-                        pose_trans_errs.append(terr)
-                        _agg("pose_rot_deg", vi, ang)
-                        _agg("pose_trans_err", vi, terr)
-                        ths = torch.linspace(0, 30, steps=31, device=pp.device)
-                        auc = (ang <= ths).float().mean().item()
-                        pose_auc30s.append(auc)
-                        _agg("auc30", vi, auc)
-                pr_pts3d = pred_vi.get("pts3d_in_other_view", None) if pred_vi is not None else None
-                if pr_pts3d is not None and isinstance(pr_pts3d, torch.Tensor):
-                    from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
-                    K = view.get("camera_intrinsics", None)
-                    gp = view.get("camera_pose", None)
-                    if not (gt_depth is not None and isinstance(gt_depth, torch.Tensor)):
-                        raise RuntimeError("Missing gt depth for geometry metrics")
-                    if not (K is not None and isinstance(K, torch.Tensor)):
-                        raise RuntimeError("Missing camera intrinsics for geometry metrics")
-                    if not (gp is not None and isinstance(gp, torch.Tensor)):
-                        raise RuntimeError("Missing camera pose for geometry metrics")
-                    pr = pr_pts3d
-                    # ensure gt_depth [B,H,W]
-                    gtd = gt_depth
-                    if gtd.ndim == 4 and gtd.shape[1] == 1:
-                        gtd = gtd.squeeze(1)
-                    if gtd.ndim == 4 and gtd.shape[-1] == 1:
-                        gtd = gtd.squeeze(-1)
-                    B, H, W = gtd.shape[:3]
-                    fu = K[:, 0, 0]
-                    fv = K[:, 1, 1]
-                    cu = K[:, 0, 2]
-                    cv = K[:, 1, 2]
-                    fu_map = fu.view(B, 1, 1).expand(B, H, W)
-                    fv_map = fv.view(B, 1, 1).expand(B, H, W)
-                    pseudo_focal = torch.stack([fu_map, fv_map], dim=1)  # [B,2,H,W]
-                    pp = torch.stack([cu, cv], dim=1)  # [B,2]
-                    gt_pts = depthmap_to_pts3d(depth=gtd, pseudo_focal=pseudo_focal, pp=pp)
-                    gt_world = geotrf(gp, gt_pts)
-                    pr_flat = pr.reshape(pr.shape[0], -1, 3)
-                    gt_flat = gt_world.reshape(gt_world.shape[0], -1, 3)
-                    if mask is not None and isinstance(mask, torch.Tensor):
-                        m_flat = mask.reshape(mask.shape[0], -1)
-                    else:
-                        m_flat = torch.ones(pr_flat.shape[:2], dtype=torch.bool, device=pr_flat.device)
-                    pr_sel = pr_flat[m_flat]
-                    gt_sel = gt_flat[m_flat]
-                    if pr_sel.numel() > 0 and gt_sel.numel() > 0:
-                        pr_sel = pr_sel.view(-1, 3)
-                        gt_sel = gt_sel.view(-1, 3)
-                        dmat = torch.cdist(pr_sel.unsqueeze(0), gt_sel.unsqueeze(0), p=2).squeeze(0)
-                        d_pred_to_gt = dmat.min(dim=1).values
-                        d_gt_to_pred = dmat.min(dim=0).values
-                        l1 = d_pred_to_gt.mean().item()
-                        l2 = torch.sqrt(d_pred_to_gt.square().mean()).item()
-                        pts3d_chamfer_l1s.append(l1)
-                        pts3d_chamfer_l2s.append(l2)
-                        acc_means.append(d_pred_to_gt.mean().item())
-                        acc_meds.append(d_pred_to_gt.median().item())
-                        comp_means.append(d_gt_to_pred.mean().item())
-                        comp_meds.append(d_gt_to_pred.median().item())
-                        _agg("acc_mean", vi, d_pred_to_gt.mean().item())
-                        _agg("acc_med", vi, d_pred_to_gt.median().item())
-                        _agg("comp_mean", vi, d_gt_to_pred.mean().item())
-                        _agg("comp_med", vi, d_gt_to_pred.median().item())
-                        B = pr.shape[0]
-                        H, W = gt_pts.shape[-3:-1]
-                        pr_grid = pr.reshape(B, H, W, 3)
-                        gt_grid = gt_world.reshape(B, H, W, 3)
-                        dx_pr = pr_grid[:, :, 1:, :] - pr_grid[:, :, :-1, :]
-                        dy_pr = pr_grid[:, 1:, :, :] - pr_grid[:, :-1, :, :]
-                        dx_gt = gt_grid[:, :, 1:, :] - gt_grid[:, :, :-1, :]
-                        dy_gt = gt_grid[:, 1:, :, :] - gt_grid[:, :-1, :, :]
-                        nx_pr = torch.linalg.cross(dx_pr[:, 1:, :, :], dy_pr[:, :, 1:, :], dim=-1)
-                        nx_gt = torch.linalg.cross(dx_gt[:, 1:, :, :], dy_gt[:, :, 1:, :], dim=-1)
-                        n_pr = torch.nn.functional.normalize(nx_pr, dim=-1)
-                        n_gt = torch.nn.functional.normalize(nx_gt, dim=-1)
-                        cos = (n_pr * n_gt).sum(dim=-1).clamp(-1, 1)
-                        cos = cos.reshape(-1)
-                        nc_means.append(cos.mean().item())
-                        nc_meds.append(cos.median().item())
-                        _agg("nc_mean", vi, cos.mean().item())
-                        _agg("nc_med", vi, cos.median().item())
-                pr_conf = pred_vi.get("conf", None) if pred_vi is not None else None
-                if pr_conf is not None and isinstance(pr_conf, torch.Tensor):
-                    conf_means.append(pr_conf.mean().item())
-                if pred_vi is not None:
-                    tconf = pred_vi.get("track_conf", None)
-                    tvis = pred_vi.get("vis", None)
-                    if isinstance(tconf, torch.Tensor):
-                        track_conf_means.append(tconf.mean().item())
-                        _agg("track_conf_mean", vi, tconf.mean().item())
-                    if isinstance(tvis, torch.Tensor):
-                        track_vis_ratios.append(tvis.float().mean().item())
-                        _agg("track_vis_ratio", vi, tvis.float().mean().item())
-            if depth_absrels:
-                metric_logger.update(depth_absrel=float(np.mean(depth_absrels)))
-            if depth_rmses:
-                metric_logger.update(depth_rmse=float(np.mean(depth_rmses)))
-            if depth_log_rmses:
-                metric_logger.update(depth_log_rmse=float(np.mean(depth_log_rmses)))
-            if depth_si_rmses:
-                metric_logger.update(depth_si_rmse=float(np.mean(depth_si_rmses)))
-            if depth_delta_125s:
-                metric_logger.update(depth_delta_125=float(np.mean(depth_delta_125s)))
-            if depth_delta_1252s:
-                metric_logger.update(depth_delta_1252=float(np.mean(depth_delta_1252s)))
-            if depth_delta_1253s:
-                metric_logger.update(depth_delta_1253=float(np.mean(depth_delta_1253s)))
-            if pose_rot_degs:
-                metric_logger.update(pose_rot_deg=float(np.mean(pose_rot_degs)))
-            if pose_trans_errs:
-                metric_logger.update(pose_trans_err=float(np.mean(pose_trans_errs)))
-            if pose_auc30s:
-                metric_logger.update(pose_auc30=float(np.mean(pose_auc30s)))
-            if pts3d_chamfer_l1s:
-                metric_logger.update(pts3d_chamfer_l1=float(np.mean(pts3d_chamfer_l1s)))
-            if pts3d_chamfer_l2s:
-                metric_logger.update(pts3d_chamfer_l2=float(np.mean(pts3d_chamfer_l2s)))
-            if acc_means:
-                metric_logger.update(pts3d_acc_mean=float(np.mean(acc_means)))
-            if acc_meds:
-                metric_logger.update(pts3d_acc_med=float(np.mean(acc_meds)))
-            if comp_means:
-                metric_logger.update(pts3d_comp_mean=float(np.mean(comp_means)))
-            if comp_meds:
-                metric_logger.update(pts3d_comp_med=float(np.mean(comp_meds)))
-            if nc_means:
-                metric_logger.update(pts3d_nc_mean=float(np.mean(nc_means)))
-            if nc_meds:
-                metric_logger.update(pts3d_nc_med=float(np.mean(nc_meds)))
-            if conf_means:
-                metric_logger.update(conf_mean=float(np.mean(conf_means)))
-            if track_conf_means:
-                metric_logger.update(track_conf_mean=float(np.mean(track_conf_means)))
-            if track_vis_ratios:
-                metric_logger.update(track_vis_ratio=float(np.mean(track_vis_ratios)))
+                    raise RuntimeError("ray_mask must be [B,H,W] or [H,W]")
+                depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
+                valid = m & (g > depth_min) & (pd > depth_min)
+                if valid.any():
+                    rel = ((pd - g).abs() / g.clamp_min(depth_min)).masked_select(valid).mean().item()
+                    rmse = torch.sqrt(((pd - g).square()).masked_select(valid).mean()).item()
+                    pd_safe = pd.clamp_min(depth_min)
+                    g_safe = g.clamp_min(depth_min)
+                    log_diff = (pd_safe.log() - g_safe.log())
+                    log_rmse = torch.sqrt((log_diff.square()).masked_select(valid).mean()).item()
+                    mu = log_diff.masked_select(valid).mean()
+                    si_rmse = torch.sqrt((((log_diff - mu).square()).masked_select(valid)).mean()).item()
+                    ratio = torch.maximum(pd_safe / g_safe, g_safe / pd_safe)
+                    d125 = ratio.masked_select(valid).lt(1.25).float().mean().item()
+                    d1252 = ratio.masked_select(valid).lt(1.25**2).float().mean().item()
+                    d1253 = ratio.masked_select(valid).lt(1.25**3).float().mean().item()
+                    depth_absrels.append(rel)
+                    depth_rmses.append(rmse)
+                    depth_log_rmses.append(log_rmse)
+                    depth_si_rmses.append(si_rmse)
+                    depth_delta_125s.append(d125)
+                    depth_delta_1252s.append(d1252)
+                    depth_delta_1253s.append(d1253)
+                    _agg("depth_absrel", vi, rel)
+                    _agg("depth_delta_125", vi, d125)
+                # pose metrics (convert 7D to 3x4 if needed)
+                gp = view["camera_pose"]
+                pp = pred_vi["camera_pose"]
+                if pp.ndim == 2 and pp.shape[-1] == 7:
+                    t = pp[:, :3]
+                    q = pp[:, 3:]
+                    qw, qx, qy, qz = q[:, 3], q[:, 0], q[:, 1], q[:, 2]
+                    R11 = 1 - 2 * (qy * qy + qz * qz)
+                    R12 = 2 * (qx * qy - qz * qw)
+                    R13 = 2 * (qx * qz + qy * qw)
+                    R21 = 2 * (qx * qy + qz * qw)
+                    R22 = 1 - 2 * (qx * qx + qz * qz)
+                    R23 = 2 * (qy * qz - qx * qw)
+                    R31 = 2 * (qx * qz - qy * qw)
+                    R32 = 2 * (qy * qz + qx * qw)
+                    R33 = 1 - 2 * (qx * qx + qy * qy)
+                    Rp = torch.stack(
+                        [
+                            torch.stack([R11, R12, R13], dim=-1),
+                            torch.stack([R21, R22, R23], dim=-1),
+                            torch.stack([R31, R32, R33], dim=-1),
+                        ],
+                        dim=1,
+                    )
+                    pp = torch.cat([Rp, t[:, :, None]], dim=2)
+                Rp = pp[:, :3, :3]
+                Rg = gp[:, :3, :3]
+                Rrel = Rp @ Rg.transpose(1, 2)
+                tr = Rrel[:, 0, 0] + Rrel[:, 1, 1] + Rrel[:, 2, 2]
+                val = torch.clamp((tr - 1) / 2, -1.0, 1.0)
+                ang = torch.rad2deg(torch.acos(val)).mean().item()
+                tp = pp[:, :3, 3]
+                tg = gp[:, :3, 3]
+                terr = torch.linalg.norm(tp - tg, dim=1).mean().item()
+                pose_rot_degs.append(ang)
+                pose_trans_errs.append(terr)
+                _agg("pose_rot_deg", vi, ang)
+                _agg("pose_trans_err", vi, terr)
+                ths = torch.linspace(0, 30, steps=31, device=pp.device)
+                auc = (ang <= ths).float().mean().item()
+                pose_auc30s.append(auc)
+                _agg("auc30", vi, auc)
+                # geometry metrics
+                pr = pred_vi["pts3d_in_other_view"]
+                K = view["camera_intrinsics"]
+                gtd = g
+                B, H, W = gtd.shape[:3]
+                fu = K[:, 0, 0]
+                fv = K[:, 1, 1]
+                cu = K[:, 0, 2]
+                cv = K[:, 1, 2]
+                fu_map = fu.view(B, 1, 1).expand(B, H, W)
+                fv_map = fv.view(B, 1, 1).expand(B, H, W)
+                pseudo_focal = torch.stack([fu_map, fv_map], dim=1)
+                pp2 = torch.stack([cu, cv], dim=1)
+                gt_pts = depthmap_to_pts3d(depth=gtd, pseudo_focal=pseudo_focal, pp=pp2)
+                gt_world = geotrf(gp, gt_pts)
+                pr_flat = pr.reshape(pr.shape[0], -1, 3)
+                gt_flat = gt_world.reshape(gt_world.shape[0], -1, 3)
+                m_flat = m.reshape(m.shape[0], -1)
+                pr_sel = pr_flat[m_flat]
+                gt_sel = gt_flat[m_flat]
+                if pr_sel.numel() > 0 and gt_sel.numel() > 0:
+                    pr_sel = pr_sel.view(-1, 3)
+                    gt_sel = gt_sel.view(-1, 3)
+                    dmat = torch.cdist(pr_sel.unsqueeze(0), gt_sel.unsqueeze(0), p=2).squeeze(0)
+                    d_pred_to_gt = dmat.min(dim=1).values
+                    d_gt_to_pred = dmat.min(dim=0).values
+                    l1 = d_pred_to_gt.mean().item()
+                    l2 = torch.sqrt(d_pred_to_gt.square().mean()).item()
+                    pts3d_chamfer_l1s.append(l1)
+                    pts3d_chamfer_l2s.append(l2)
+                    acc_means.append(d_pred_to_gt.mean().item())
+                    acc_meds.append(d_pred_to_gt.median().item())
+                    comp_means.append(d_gt_to_pred.mean().item())
+                    comp_meds.append(d_gt_to_pred.median().item())
+                    _agg("acc_mean", vi, d_pred_to_gt.mean().item())
+                    _agg("acc_med", vi, d_pred_to_gt.median().item())
+                    _agg("comp_mean", vi, d_gt_to_pred.mean().item())
+                    _agg("comp_med", vi, d_gt_to_pred.median().item())
+                    pr_grid = pr.reshape(B, H, W, 3)
+                    gt_grid = gt_world.reshape(B, H, W, 3)
+                    dx_pr = pr_grid[:, :, 1:, :] - pr_grid[:, :, :-1, :]
+                    dy_pr = pr_grid[:, 1:, :, :] - pr_grid[:, :-1, :, :]
+                    dx_gt = gt_grid[:, :, 1:, :] - gt_grid[:, :, :-1, :]
+                    dy_gt = gt_grid[:, 1:, :, :] - gt_grid[:, :-1, :, :]
+                    nx_pr = torch.linalg.cross(dx_pr[:, 1:, :, :], dy_pr[:, :, 1:, :], dim=-1)
+                    nx_gt = torch.linalg.cross(dx_gt[:, 1:, :, :], dy_gt[:, :, 1:, :], dim=-1)
+                    n_pr = torch.nn.functional.normalize(nx_pr, dim=-1)
+                    n_gt = torch.nn.functional.normalize(nx_gt, dim=-1)
+                    cos = (n_pr * n_gt).sum(dim=-1).clamp(-1, 1)
+                    cos = cos.reshape(-1)
+                    nc_means.append(cos.mean().item())
+                    nc_meds.append(cos.median().item())
+                    _agg("nc_mean", vi, cos.mean().item())
+                    _agg("nc_med", vi, cos.median().item())
+                pr_conf = pred_vi["conf"]
+                conf_means.append(pr_conf.mean().item())
+                tconf = pred_vi["track_conf"]
+                tvis = pred_vi["vis"]
+                track_conf_means.append(tconf.mean().item())
+                _agg("track_conf_mean", vi, tconf.mean().item())
+                track_vis_ratios.append(tvis.float().mean().item())
+                _agg("track_vis_ratio", vi, tvis.float().mean().item())
+            def _avg(xs):
+                return float(np.nanmean(np.array(xs, dtype=np.float32)))
+            metric_logger.update(
+                depth_absrel=_avg(depth_absrels),
+                depth_rmse=_avg(depth_rmses),
+                depth_log_rmse=_avg(depth_log_rmses),
+                depth_si_rmse=_avg(depth_si_rmses),
+                depth_delta_125=_avg(depth_delta_125s),
+                depth_delta_1252=_avg(depth_delta_1252s),
+                depth_delta_1253=_avg(depth_delta_1253s),
+                pose_rot_deg=_avg(pose_rot_degs),
+                pose_trans_err=_avg(pose_trans_errs),
+                pose_auc30=_avg(pose_auc30s),
+                pts3d_chamfer_l1=_avg(pts3d_chamfer_l1s),
+                pts3d_chamfer_l2=_avg(pts3d_chamfer_l2s),
+                pts3d_acc_mean=_avg(acc_means),
+                pts3d_acc_med=_avg(acc_meds),
+                pts3d_comp_mean=_avg(comp_means),
+                pts3d_comp_med=_avg(comp_meds),
+                pts3d_nc_mean=_avg(nc_means),
+                pts3d_nc_med=_avg(nc_meds),
+                conf_mean=_avg(conf_means),
+                track_conf_mean=_avg(track_conf_means),
+                track_vis_ratio=_avg(track_vis_ratios),
+            )
 
     printer.info("Averaged stats: %s", metric_logger)
 
@@ -1450,32 +1344,29 @@ def test_one_epoch(
         for tag, attr in aggs
     }
     # write per-view metrics (paper subset) to metric_view.txt on main process
-    try:
-        if accelerator.is_main_process and hasattr(args, "output_dir"):
-            outp = os.path.join(args.output_dir, "metric_view.txt")
-            line = {"epoch": epoch}
-            # compute per-view means; keep only: AUC@30, (Acc/Comp/NC)x(Mean/Med), AbsRel, delta<1.25
-            view_dict = {}
-            paper_keep = {
-                "auc30",
-                "acc_mean", "acc_med",
-                "comp_mean", "comp_med",
-                "nc_mean", "nc_med",
-                "depth_absrel", "depth_delta_125",
-            }
-            for mname, mvals in per_view_metrics.items():
-                if mname not in paper_keep:
-                    continue
-                for vi, arr in mvals.items():
-                    if not arr:
-                        continue
-                    key = f"{mname}_v{vi+1}"
-                    view_dict[key] = float(np.mean(arr))
-            line[prefix] = view_dict
-            with open(outp, "a", encoding="utf-8") as f:
-                f.write(json.dumps(line) + "\n")
-    except Exception:
-        pass
+    if accelerator.is_main_process and hasattr(args, "output_dir"):
+        outp = os.path.join(args.output_dir, "metric_view.txt")
+        line = {"epoch": epoch}
+        view_dict = {}
+        metrics = [
+            "auc30",
+            "acc_mean", "acc_med",
+            "comp_mean", "comp_med",
+            "nc_mean", "nc_med",
+            "depth_absrel", "depth_delta_125",
+        ]
+        num_views = int(getattr(args, "num_test_views", 0) or 0)
+        for m in metrics:
+            for vi in range(num_views):
+                arr = per_view_metrics[m].get(vi, [])
+                if not arr:
+                    raise RuntimeError(f"Missing per-view data for {m} v{vi+1}")
+                key = f"{m}_v{vi+1}"
+                view_dict[key] = float(np.mean(arr))
+        line[prefix] = view_dict
+        with open(outp, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line) + "\n")
+
 
     if log_writer is not None:
         for name, val in results.items():
