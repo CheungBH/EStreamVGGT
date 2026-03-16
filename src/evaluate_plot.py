@@ -146,6 +146,7 @@ def main():
                     r = int(v.shape[0])
                     alpha = r
                     apply_lora_to_aggregator(model.aggregator, r=r, alpha=alpha, target="all")
+                    model.to(device)
                     break
         model.load_state_dict(sd, strict=True)
         test_one_epoch(
