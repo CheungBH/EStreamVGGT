@@ -132,7 +132,10 @@ def main():
     ep = 1
     for eidx, path in ckpts:
         ckpt = torch.load(path, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt, strict=True)
+        sd = ckpt["model"] if isinstance(ckpt, dict) else ckpt
+        if isinstance(sd, dict) and len(sd) > 0 and next(iter(sd)).startswith("module."):
+            sd = {k.replace("module.", "", 1): v for k, v in sd.items()}
+        model.load_state_dict(sd, strict=True)
         test_one_epoch(
             model,
             None,
