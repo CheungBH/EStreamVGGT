@@ -1307,9 +1307,12 @@ def test_one_epoch(
                         terr = torch.linalg.norm(t - tg, dim=1).mean().item()
                         pose_rot_degs.append(ang)
                         pose_trans_errs.append(terr)
+                        _agg("pose_rot_deg", vi, ang)
+                        _agg("pose_trans_err", vi, terr)
                         ths = torch.linspace(0, 30, steps=31, device=pp.device)
                         auc = (ang <= ths).float().mean().item()
                         pose_auc30s.append(auc)
+                        _agg("auc30", vi, auc)
                 pr_pts3d = pred_vi.get("pts3d_in_other_view", None) if pred_vi is not None else None
                 if pr_pts3d is not None and isinstance(pr_pts3d, torch.Tensor):
                     from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
