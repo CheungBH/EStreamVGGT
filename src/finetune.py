@@ -1161,7 +1161,17 @@ def test_one_epoch(
                 pred_vi = preds[vi]
                 # depth metrics
                 gt_depth = view["depthmap"]
-                mask = view["ray_mask"].bool()
+                # normalize mask: prefer ray_mask, fallback valid_mask, else all-ones
+                m_in = view.get("ray_mask", None)
+                if m_in is None:
+                    m_in = view.get("valid_mask", None)
+                if m_in is None:
+                    m_in = torch.ones_like(gt_depth, dtype=torch.bool)
+                # squeeze/convert to boolean and broadcast
+                if isinstance(m_in, torch.Tensor):
+                    mask = m_in.bool()
+                else:
+                    mask = torch.as_tensor(m_in).bool()
                 pr_depth = pred_vi["depth"]
                 pd = pr_depth
                 g = gt_depth
@@ -1180,7 +1190,11 @@ def test_one_epoch(
                 elif mask.ndim == 3:
                     m = mask
                 else:
-                    raise RuntimeError("ray_mask must be [B,H,W] or [H,W]")
+                    # handle [B,1,H,W] or [B,H,W,1]
+                    if mask.ndim == 4 and (mask.shape[1] == 1 or mask.shape[-1] == 1):
+                        m = mask.squeeze(1) if mask.shape[1] == 1 else mask.squeeze(-1)
+                    else:
+                        m = torch.ones_like(g, dtype=torch.bool)
                 depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
                 valid = m & (g > depth_min) & (pd > depth_min)
                 if valid.any():
