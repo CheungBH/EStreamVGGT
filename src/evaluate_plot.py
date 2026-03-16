@@ -9,6 +9,7 @@ from accelerate import Accelerator
 import matplotlib.pyplot as plt
 import finetune as ft
 from finetune import VGGT, build_dataset, test_one_epoch
+from vggt.lora import apply_lora_to_aggregator
 
 
 def list_checkpoints(folder):
@@ -135,6 +136,16 @@ def main():
         sd = ckpt["model"] if isinstance(ckpt, dict) else ckpt
         if isinstance(sd, dict) and len(sd) > 0 and next(iter(sd)).startswith("module."):
             sd = {k.replace("module.", "", 1): v for k, v in sd.items()}
+        # inject LoRA if checkpoint contains LoRA weights
+        has_lora = any(".lora_A.weight" in k for k in sd.keys())
+        if has_lora:
+            # infer r from the first lora_A weight shape; set alpha=r for scaling=1
+            for k, v in sd.items():
+                if k.endswith(".lora_A.weight") and hasattr(v, "shape"):
+                    r = int(v.shape[0])
+                    alpha = r
+                    apply_lora_to_aggregator(model.aggregator, r=r, alpha=alpha, target="all")
+                    break
         model.load_state_dict(sd, strict=True)
         test_one_epoch(
             model,
