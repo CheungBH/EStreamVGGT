@@ -131,7 +131,7 @@ def main():
     criterion = eval(crit_expr, ft.__dict__).to(device)
     ep = 1
     for eidx, path in ckpts:
-        ckpt = torch.load(path, map_location=device)
+        ckpt = torch.load(path, map_location=device, weight_only=False)
         model.load_state_dict(ckpt, strict=True)
         test_one_epoch(
             model,
