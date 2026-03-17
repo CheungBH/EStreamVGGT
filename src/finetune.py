@@ -373,6 +373,10 @@ def train(args):
     optimizer, model, data_loader_train = accelerator.prepare(
         optimizer, model, data_loader_train
     )
+    for state in optimizer.state.values():
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.to(next(model.parameters()).device)
 
     # eval-only fast path: load checkpoint and run tests to regenerate metrics/files
     if getattr(args, "eval_only", False) or getattr(args, "eval_sweep", False):
