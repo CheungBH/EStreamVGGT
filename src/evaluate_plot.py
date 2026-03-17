@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+import time
 import finetune as ft
 from finetune import VGGT, build_dataset, test_one_epoch
 from vggt.lora import apply_lora_to_aggregator
@@ -158,7 +160,11 @@ def main():
         crit_expr = f"{crit_expr}()"
     criterion = eval(crit_expr, ft.__dict__).to(device)
     used = set()
-    for eidx, path in run_items:
+    total = len(run_items)
+    print(f"[evaluate] total items: {total}")
+    for idx, (eidx, path) in enumerate(tqdm(run_items, total=total, desc="Checkpoints", dynamic_ncols=True), start=1):
+        t0 = time.time()
+        print(f"[{idx}/{total}] evaluating: {os.path.basename(path)} (epoch_hint={eidx})")
         if eidx in used:
             continue
         used.add(eidx)
@@ -194,6 +200,8 @@ def main():
                 model.load_state_dict(sd, strict=False)
             else:
                 raise
+        print(f"[{idx}/{total}] loaded weights, start test_one_epoch")
+        t1 = time.time()
         test_one_epoch(
             model,
             None,
@@ -206,6 +214,8 @@ def main():
             log_writer=None,
             prefix=str(getattr(cfg, "prefix", "eval")),
         )
+        dt = time.time() - t0
+        print(f"[{idx}/{total}] done {os.path.basename(path)} in {dt:.1f}s (load {t1 - t0:.1f}s, eval {dt - (t1 - t0):.1f}s)")
     plot_per_view(out_eval, str(getattr(cfg, "modality")), int(getattr(cfg, "num_test_views")), str(getattr(cfg, "prefix", "eval")))
 
 
