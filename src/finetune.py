@@ -1077,7 +1077,12 @@ def test_one_epoch(
     if log_writer is not None:
         printer.info("log_dir: {}".format(log_writer.log_dir))
 
- 
+    ds = getattr(data_loader, "dataset", None)
+    if callable(getattr(ds, "set_epoch", None)):
+        ds.set_epoch(0)
+    bs = getattr(data_loader, "batch_sampler", None)
+    if callable(getattr(bs, "set_epoch", None)):
+        bs.set_epoch(0)
 
     # per-view aggregation across the whole epoch
     per_view_metrics = {
@@ -1209,38 +1214,16 @@ def test_one_epoch(
                 gt_depth = view["depthmap"]
                 # normalize mask: prefer ray_mask, fallback valid_mask, else all-ones
                 m_in = view.get("ray_mask", None)
-                if m_in is None:
-                    m_in = view.get("valid_mask", None)
-                if m_in is None:
-                    m_in = torch.ones_like(gt_depth, dtype=torch.bool)
                 # squeeze/convert to boolean and broadcast
                 if isinstance(m_in, torch.Tensor):
                     mask = m_in.bool()
                 else:
                     mask = torch.as_tensor(m_in).bool()
                 pr_depth = pred_vi["depth"]
-                pd = pr_depth
+                pd = pr_depth.squeeze(-1)
                 g = gt_depth
-                if pd.ndim == 4 and pd.shape[1] == 1:
-                    pd = pd.squeeze(1)
-                if pd.ndim == 4 and pd.shape[-1] == 1:
-                    pd = pd.squeeze(-1)
-                if g.ndim == 4 and g.shape[1] == 1:
-                    g = g.squeeze(1)
-                if g.ndim == 4 and g.shape[-1] == 1:
-                    g = g.squeeze(-1)
-                if pd.shape[-2:] != g.shape[-2:]:
-                    pd = torch.nn.functional.interpolate(pd.unsqueeze(1).float(), size=g.shape[-2:], mode="bilinear", align_corners=True).squeeze(1)
-                if mask.ndim == 2:
-                    m = mask.unsqueeze(0).expand_as(g)
-                elif mask.ndim == 3:
-                    m = mask
-                else:
-                    # handle [B,1,H,W] or [B,H,W,1]
-                    if mask.ndim == 4 and (mask.shape[1] == 1 or mask.shape[-1] == 1):
-                        m = mask.squeeze(1) if mask.shape[1] == 1 else mask.squeeze(-1)
-                    else:
-                        m = torch.ones_like(g, dtype=torch.bool)
+
+                m = torch.ones_like(g, dtype=torch.bool)
                 depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
                 valid = m & (g > depth_min) & (pd > depth_min)
                 if valid.any():
@@ -1308,9 +1291,36 @@ def test_one_epoch(
                 if pr_sel.numel() > 0 and gt_sel.numel() > 0:
                     pr_sel = pr_sel.view(-1, 3)
                     gt_sel = gt_sel.view(-1, 3)
-                    dmat = torch.cdist(pr_sel.unsqueeze(0), gt_sel.unsqueeze(0), p=2).squeeze(0)
-                    d_pred_to_gt = dmat.min(dim=1).values
-                    d_gt_to_pred = dmat.min(dim=0).values
+                    pr_f = pr_sel.float()
+                    gt_f = gt_sel.float()
+                    max_points = 10000
+                    if pr_f.shape[0] > max_points:
+                        idx = torch.randperm(pr_f.shape[0], device=pr_f.device)[:max_points]
+                        pr_f = pr_f.index_select(0, idx)
+                    if gt_f.shape[0] > max_points:
+                        idx = torch.randperm(gt_f.shape[0], device=gt_f.device)[:max_points]
+                        gt_f = gt_f.index_select(0, idx)
+                    block = 2048
+                    d_pred_to_gt = torch.full((pr_f.shape[0],), float("inf"), device=pr_f.device)
+                    for j in range(0, gt_f.shape[0], block):
+                        gt_chunk = gt_f[j : j + block]
+                        for i in range(0, pr_f.shape[0], block):
+                            pr_chunk = pr_f[i : i + block]
+                            dist = torch.cdist(pr_chunk.unsqueeze(0), gt_chunk.unsqueeze(0), p=2).squeeze(0)
+                            chunk_min = dist.min(dim=1).values
+                            d_pred_to_gt[i : i + pr_chunk.shape[0]] = torch.minimum(
+                                d_pred_to_gt[i : i + pr_chunk.shape[0]], chunk_min
+                            )
+                    d_gt_to_pred = torch.full((gt_f.shape[0],), float("inf"), device=gt_f.device)
+                    for i in range(0, pr_f.shape[0], block):
+                        pr_chunk = pr_f[i : i + block]
+                        for j in range(0, gt_f.shape[0], block):
+                            gt_chunk = gt_f[j : j + block]
+                            dist = torch.cdist(pr_chunk.unsqueeze(0), gt_chunk.unsqueeze(0), p=2).squeeze(0)
+                            chunk_min = dist.min(dim=0).values
+                            d_gt_to_pred[j : j + gt_chunk.shape[0]] = torch.minimum(
+                                d_gt_to_pred[j : j + gt_chunk.shape[0]], chunk_min
+                            )
                     l1 = d_pred_to_gt.mean().item()
                     l2 = torch.sqrt(d_pred_to_gt.square().mean()).item()
                     pts3d_chamfer_l1s.append(l1)
