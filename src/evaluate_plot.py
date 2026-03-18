@@ -29,10 +29,10 @@ def list_checkpoints(folder):
 
 
 def plot_per_view(output_dir, modality, num_views, prefix):
-    mpath = os.path.join(output_dir, "metric_view.txt")
+    mpath = os.path.join(output_dir, "metric_views.json")
     if not os.path.exists(mpath):
         return
-    data = []
+    epoch_data = {}
     with open(mpath, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -42,56 +42,40 @@ def plot_per_view(output_dir, modality, num_views, prefix):
                 obj = json.loads(line)
             except Exception:
                 continue
-            data.append(obj)
-    if not data:
+            if not isinstance(obj, dict):
+                continue
+            for ek, views in obj.items():
+                if not ek.startswith("epoch"):
+                    continue
+                ep = int(ek.replace("epoch", ""))
+                epoch_data.setdefault(ep, {}).update(views)
+    if not epoch_data:
         return
     base = os.path.join(output_dir, "metrics_views")
     os.makedirs(base, exist_ok=True)
-    metrics = [
-        "auc30",
-        "acc_mean",
-        "acc_med",
-        "comp_mean",
-        "comp_med",
-        "nc_mean",
-        "nc_med",
-        "depth_absrel",
-        "depth_delta_125",
-    ]
-    def view_type(v, modality):
-        if modality == "rgb":
-            return "RGB"
-        if modality == "event":
-            return "event"
-        if modality == "rgb_first_event":
-            return "RGB" if v == 0 else "event"
-        if modality == "rgb_event_loop":
-            return "RGB" if (v % 2 == 0) else "event"
-        return "RGB"
+    # collect metric names
+    metrics = set()
+    for ep, views in epoch_data.items():
+        for vk, vals in views.items():
+            metrics |= set(vals.keys())
+    metrics = sorted(list(metrics))
+    # merged plots (average over views for each epoch)
     for m in metrics:
-        series = {}
-        for obj in data:
-            ep = obj.get("epoch")
-            vals = obj.get(prefix, {})
-            for v in range(1, num_views + 1):
-                key = f"{m}_v{v}"
-                if key in vals:
-                    series.setdefault(v, []).append((ep, float(vals[key])))
-        if not series:
+        xs, ys = [], []
+        for ep in sorted(epoch_data.keys()):
+            vals = [float(vs[m]) for vs in epoch_data[ep].values() if m in vs]
+            if vals:
+                xs.append(ep)
+                ys.append(float(np.mean(vals)))
+        if not xs:
             continue
         plt.figure(figsize=(8, 4))
-        for v, pts in sorted(series.items()):
-            pts = sorted(pts, key=lambda x: x[0])
-            xs = [p[0] for p in pts]
-            ys = [p[1] for p in pts]
-            lbl = f"v{v} ({view_type(v - 1, modality)})"
-            plt.plot(xs, ys, marker="o", linewidth=2, label=lbl)
+        plt.plot(xs, ys, marker="o", linewidth=2, label=f"{m}")
         plt.xlabel("epoch")
         plt.ylabel(m)
-        plt.title(f"{prefix} - {m}")
+        plt.title(f"{prefix} - merged {m}")
         plt.grid(True, alpha=0.3)
-        plt.legend()
-        safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{m}.png"
+        safe = f"{prefix.replace(' ', '_').replace('/', '_')}__merged_{m}.png"
         plt.tight_layout()
         plt.savefig(os.path.join(base, safe))
         plt.close()

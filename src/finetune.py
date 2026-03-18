@@ -681,61 +681,27 @@ def plot_category_dashboards(output_dir):
     import json
     import os
     import numpy as np
-    mpath = os.path.join(output_dir, "metric.txt")
-    if not os.path.exists(mpath):
+    # read metrics exclusively from JSON lines
+    mjson = os.path.join(output_dir, "metric.json")
+    if not os.path.exists(mjson):
         return
     data = []
-    header = None
-    with open(mpath, "r", encoding="utf-8") as f:
+    with open(mjson, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            # prefer JSON lines when available
-            obj = None
             try:
-                parsed = json.loads(line)
-                if isinstance(parsed, dict):
-                    obj = parsed
-                else:
-                    # ignore non-dict JSON (e.g., integers)
-                    obj = None
+                obj = json.loads(line)
+                if isinstance(obj, dict) and "epoch" in obj and "name" in obj and "value" in obj:
+                    data.append(obj)
             except Exception:
-                obj = None
-            if obj is not None:
-                data.append(obj)
                 continue
-            # fallback: parse space-delimited table written by evaluate_plot.py
-            toks = line.split()
-            if not toks:
-                continue
-            if header is None and toks[0].lower() == "epoch":
-                header = toks  # e.g., ["epoch", "loss", "pose_loss", ...]
-                continue
-            if header is not None:
-                # expect same number of columns
-                if len(toks) != len(header):
-                    continue
-                try:
-                    ep = int(float(toks[0]))
-                    vals = {}
-                    for k, v in zip(header[1:], toks[1:]):
-                        try:
-                            vals[k] = float(v)
-                        except Exception:
-                            pass
-                    # synthesize a prefix "eval" for table rows
-                    data.append({"epoch": ep, "eval": vals})
-                except Exception:
-                    continue
     if not data:
         return
     prefixes = []
     for obj in data:
-        if isinstance(obj, dict):
-            for k in obj.keys():
-                if k != "epoch":
-                    prefixes.append(k)
+        prefixes.append("eval")
     prefixes = sorted(list(set(prefixes)))
     cat_map = {
         "depth_error": [
@@ -754,25 +720,32 @@ def plot_category_dashboards(output_dir):
             "pts3d_nc_mean", "pts3d_nc_med",
             "pts3d_chamfer_l1", "pts3d_chamfer_l2",
         ],
-        "confidence_visibility": [
-            "conf_mean", "track_conf_mean", "track_vis_ratio",
+        "confidence": [
+            "conf_mean",
+        ],
+        "track": [
+            "track_conf_mean", "track_vis_ratio",
         ],
         "loss": [
-            "loss_avg", "loss_med", "pose_loss_avg", "pose_loss_med",
+            "loss", "pose_loss",
         ],
     }
     outdir = os.path.join(output_dir, "visualize", "metrics_dashboards")
     os.makedirs(outdir, exist_ok=True)
     def collect_series(prefix, keys):
         series = {}
+        # JSON lines with {"epoch": e, "name": metric, "value": v}
+        by_metric = {}
         for obj in data:
-            ep = obj.get("epoch")
-            vals = obj.get(prefix, {})
-            for k in keys:
-                if k in vals and isinstance(ep, (int, float)):
-                    series.setdefault(k, []).append((ep, float(vals[k])))
-        for k in list(series.keys()):
-            series[k] = sorted(series[k], key=lambda x: x[0])
+            if not isinstance(obj, dict):
+                continue
+            name = obj.get("name")
+            if name in keys:
+                ep = obj.get("epoch")
+                val = float(obj.get("value", float("nan")))
+                by_metric.setdefault(name, []).append((ep, val))
+        for k, pts in by_metric.items():
+            series[k] = sorted(pts, key=lambda x: x[0])
         return series
     def plot_cat(prefix, cname, keys):
         series = collect_series(prefix, keys)
@@ -1435,13 +1408,15 @@ def test_one_epoch(
         line[prefix] = view_dict
         with open(outp, "a", encoding="utf-8") as f:
             f.write(json.dumps(line) + "\n")
-        # write new metric_views.json (one view per line)
+        # write new metric_views.json as hierarchical dict per epoch
+        epoch_dict = {f"epoch{epoch}": {}}
+        for vi in range(num_views):
+            vm = {}
+            for m in metrics:
+                vm[m] = float(np.mean(per_view_metrics[m].get(vi, [])))
+            epoch_dict[f"epoch{epoch}"][f"view{vi+1}"] = vm
         with open(outp_new_json, "a", encoding="utf-8") as f2:
-            for vi in range(num_views):
-                vm = {}
-                for m in metrics:
-                    vm[m] = float(np.mean(per_view_metrics[m].get(vi, [])))
-                f2.write(json.dumps({"epoch": epoch, "view": vi + 1, "metrics": vm}) + "\n")
+            f2.write(json.dumps(epoch_dict) + "\n")
         # write new metric_views.txt as space-separated table
         if not os.path.exists(outp_new_txt):
             with open(outp_new_txt, "w", encoding="utf-8") as ft:
