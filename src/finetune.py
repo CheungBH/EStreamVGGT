@@ -1107,9 +1107,10 @@ def test_one_epoch(
             teacher=teacher,
             symmetrize_batch=False,
             use_amp=bool(args.amp),
+            inference=True,
         )
 
-        loss_value, loss_details = result["loss"]  # criterion returns two values
+        loss_value, loss_details = 0.0, {}
         metric_logger.update(loss=float(loss_value), **loss_details)
 
         if isinstance(batch, list):
