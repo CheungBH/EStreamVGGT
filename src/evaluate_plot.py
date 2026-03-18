@@ -46,21 +46,42 @@ def plot_per_view(output_dir, modality, num_views, prefix):
         return "RGB"
     epoch_data = {}
     with open(mpath, "r", encoding="utf-8") as f:
+        buf = []
         for line in f:
-            line = line.strip()
-            if not line:
+            if line.strip() == "":
+                if buf:
+                    block = "".join(buf)
+                    try:
+                        obj = json.loads(block)
+                        if isinstance(obj, dict):
+                            for ek, views in obj.items():
+                                if ek.startswith("epoch") and isinstance(views, dict):
+                                    try:
+                                        ep = int(ek.replace("epoch", ""))
+                                    except Exception:
+                                        ep = None
+                                    if ep is not None:
+                                        epoch_data.setdefault(ep, {}).update(views)
+                    except Exception:
+                        pass
+                    buf = []
                 continue
+            buf.append(line)
+        if buf:
+            block = "".join(buf)
             try:
-                obj = json.loads(line)
+                obj = json.loads(block)
+                if isinstance(obj, dict):
+                    for ek, views in obj.items():
+                        if ek.startswith("epoch") and isinstance(views, dict):
+                            try:
+                                ep = int(ek.replace("epoch", ""))
+                            except Exception:
+                                ep = None
+                            if ep is not None:
+                                epoch_data.setdefault(ep, {}).update(views)
             except Exception:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            for ek, views in obj.items():
-                if not ek.startswith("epoch"):
-                    continue
-                ep = int(ek.replace("epoch", ""))
-                epoch_data.setdefault(ep, {}).update(views)
+                pass
     if not epoch_data:
         return
     base = os.path.join(output_dir, "metrics_views")
@@ -253,7 +274,7 @@ def main():
             ep_obj[ep_key][name] = float(val)
 
         with open(jpath, "a", encoding="utf-8") as jf:
-            jf.write(json.dumps(ep_obj) + "\n")
+            jf.write(json.dumps(ep_obj, indent=2, ensure_ascii=False) + "\n\n")
         # write metric.txt as space-separated table (header + rows)
         tpath = os.path.join(out_eval, "metric.txt")
         keys = sorted(list((stats or {}).keys()))

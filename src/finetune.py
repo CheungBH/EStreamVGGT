@@ -687,25 +687,42 @@ def plot_category_dashboards(output_dir):
         return
     data = []
     with open(mjson, "r", encoding="utf-8") as f:
+        buf = []
         for line in f:
-            line = line.strip()
-            if not line:
+            if line.strip() == "":
+                if buf:
+                    block = "".join(buf)
+                    try:
+                        obj = json.loads(block)
+                        if isinstance(obj, dict):
+                            for ek, vals in obj.items():
+                                if ek.startswith("Epoch") and isinstance(vals, dict):
+                                    try:
+                                        ep = int(ek.replace("Epoch", ""))
+                                    except Exception:
+                                        ep = None
+                                    if ep is not None:
+                                        data.append({"epoch": ep, "metrics": vals})
+                    except Exception:
+                        pass
+                    buf = []
                 continue
+            buf.append(line)
+        if buf:
+            block = "".join(buf)
             try:
-                obj = json.loads(line)
+                obj = json.loads(block)
+                if isinstance(obj, dict):
+                    for ek, vals in obj.items():
+                        if ek.startswith("Epoch") and isinstance(vals, dict):
+                            try:
+                                ep = int(ek.replace("Epoch", ""))
+                            except Exception:
+                                ep = None
+                            if ep is not None:
+                                data.append({"epoch": ep, "metrics": vals})
             except Exception:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            for ek, vals in obj.items():
-                if not ek.startswith("Epoch"):
-                    continue
-                try:
-                    ep = int(ek.replace("Epoch", ""))
-                except Exception:
-                    continue
-                if isinstance(vals, dict):
-                    data.append({"epoch": ep, "metrics": vals})
+                pass
     if not data:
         return
     prefixes = ["eval"]
@@ -1391,7 +1408,7 @@ def test_one_epoch(
         for name, val in results.items():
             ep_obj[ep_key][name] = float(val)
         with open(mjson, "a", encoding="utf-8") as jf:
-            jf.write(json.dumps(ep_obj) + "\n")
+            jf.write(json.dumps(ep_obj, indent=2, ensure_ascii=False) + "\n\n")
         # write metric.txt table (header once; ordered by categories)
         mtxt = os.path.join(out_root, "metric.txt")
         keys = sorted(list(results.keys()))
@@ -1452,7 +1469,7 @@ def test_one_epoch(
                 vm[m] = float(np.mean(per_view_metrics[m].get(vi, [])))
             epoch_dict[f"epoch{epoch}"][f"view{vi+1}"] = vm
         with open(outp_new_json, "a", encoding="utf-8") as f2:
-            f2.write(json.dumps(epoch_dict) + "\n")
+            f2.write(json.dumps(epoch_dict, indent=2, ensure_ascii=False) + "\n\n")
         # write new metric_views.txt as space-separated table
         if not os.path.exists(outp_new_txt):
             with open(outp_new_txt, "w", encoding="utf-8") as ft:
