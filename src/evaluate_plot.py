@@ -222,24 +222,27 @@ def main():
                 consolidated[pfx] = float(np.mean(vals))
         avg_prefix("Regr3DPose_pts3d")
         avg_prefix("Regr3DPose_ScaleInv_pts3d")
-        # write metric.json (newline json, one metric per line)
+        # write metric.json (newline json, include avg/med keys verbatim)
         jpath = os.path.join(out_eval, "metric.json")
         with open(jpath, "a", encoding="utf-8") as jf:
-            for name, val in consolidated.items():
-                jf.write(json.dumps({"epoch": int(eidx), "name": name, "value": val}) + "\n")
+            for name, val in (stats or {}).items():
+                jf.write(json.dumps({"epoch": int(eidx), "name": name, "value": float(val)}) + "\n")
         # write metric.txt as space-separated table (header + rows)
         tpath = os.path.join(out_eval, "metric.txt")
+        keys = sorted(list((stats or {}).keys()))
+        def sel(prefixes):
+            return [k for k in keys if any(k.startswith(p) for p in prefixes)]
         order = []
-        order += [k for k in ("loss","pose_loss") if k in consolidated]
-        order += [k for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253") if k in consolidated]
-        order += [k for k in ("pose_rot_deg","pose_trans_err","pose_auc30") if k in consolidated]
-        order += [k for k in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d") if k in consolidated]
-        order += [k for k in ("conf_mean","track_conf_mean","track_vis_ratio") if k in consolidated]
+        order += sel(["loss","pose_loss"])
+        order += sel(["depth_"])
+        order += sel(["pose_"])
+        order += sel(["pts3d_","Regr3DPose_"])
+        order += sel(["track_conf_mean","track_vis_ratio","conf_mean"])
         if not os.path.exists(tpath):
             with open(tpath, "w", encoding="utf-8") as tf:
                 tf.write("epoch " + " ".join(order) + "\n")
         with open(tpath, "a", encoding="utf-8") as tf:
-            vals = [str(int(eidx))] + [f"{consolidated[k]:.6f}" for k in order]
+            vals = [str(int(eidx))] + [f"{float((stats or {}).get(k, float('nan'))):.6f}" for k in order]
             tf.write(" ".join(vals) + "\n")
         dt = time.time() - t0
         print(f"[{idx}/{total}] done {os.path.basename(path)} in {dt:.1f}s (load {t1 - t0:.1f}s, eval {dt - (t1 - t0):.1f}s)")
