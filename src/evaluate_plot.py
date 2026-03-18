@@ -46,42 +46,17 @@ def plot_per_view(output_dir, modality, num_views, prefix):
         return "RGB"
     epoch_data = {}
     with open(mpath, "r", encoding="utf-8") as f:
-        buf = []
-        for line in f:
-            if line.strip() == "":
-                if buf:
-                    block = "".join(buf)
-                    try:
-                        obj = json.loads(block)
-                        if isinstance(obj, dict):
-                            for ek, views in obj.items():
-                                if ek.startswith("epoch") and isinstance(views, dict):
-                                    try:
-                                        ep = int(ek.replace("epoch", ""))
-                                    except Exception:
-                                        ep = None
-                                    if ep is not None:
-                                        epoch_data.setdefault(ep, {}).update(views)
-                    except Exception:
-                        pass
-                    buf = []
-                continue
-            buf.append(line)
-        if buf:
-            block = "".join(buf)
+        try:
+            obj = json.load(f)
+        except Exception:
+            obj = {}
+    for ek, views in obj.items():
+        if ek.startswith("epoch") and isinstance(views, dict):
             try:
-                obj = json.loads(block)
-                if isinstance(obj, dict):
-                    for ek, views in obj.items():
-                        if ek.startswith("epoch") and isinstance(views, dict):
-                            try:
-                                ep = int(ek.replace("epoch", ""))
-                            except Exception:
-                                ep = None
-                            if ep is not None:
-                                epoch_data.setdefault(ep, {}).update(views)
+                ep = int(ek.replace("epoch", ""))
             except Exception:
-                pass
+                continue
+            epoch_data.setdefault(ep, {}).update(views)
     if not epoch_data:
         return
     base = os.path.join(output_dir, "metrics_views")
@@ -266,15 +241,19 @@ def main():
                 consolidated[pfx] = float(np.mean(vals))
         avg_prefix("Regr3DPose_pts3d")
         avg_prefix("Regr3DPose_ScaleInv_pts3d")
-        # write metric.json as hierarchical per-epoch line: {"EpochX": {metric: value, ...}}
+        # write metric.json as aggregated object
         jpath = os.path.join(out_eval, "metric.json")
         ep_key = f"Epoch{int(eidx)}"
-        ep_obj = {ep_key: {}}
-        for name, val in (stats or {}).items():
-            ep_obj[ep_key][name] = float(val)
-
-        with open(jpath, "a", encoding="utf-8") as jf:
-            jf.write(json.dumps(ep_obj, indent=2, ensure_ascii=False) + "\n\n")
+        obj = {}
+        if os.path.exists(jpath):
+            try:
+                with open(jpath, "r", encoding="utf-8") as rf:
+                    obj = json.load(rf)
+            except Exception:
+                obj = {}
+        obj[ep_key] = {name: float(val) for name, val in (stats or {}).items()}
+        with open(jpath, "w", encoding="utf-8") as wf:
+            json.dump(obj, wf, indent=2, ensure_ascii=False)
         # write metric.txt as space-separated table (header + rows)
         tpath = os.path.join(out_eval, "metric.txt")
         keys = sorted(list((stats or {}).keys()))

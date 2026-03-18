@@ -687,42 +687,17 @@ def plot_category_dashboards(output_dir):
         return
     data = []
     with open(mjson, "r", encoding="utf-8") as f:
-        buf = []
-        for line in f:
-            if line.strip() == "":
-                if buf:
-                    block = "".join(buf)
-                    try:
-                        obj = json.loads(block)
-                        if isinstance(obj, dict):
-                            for ek, vals in obj.items():
-                                if ek.startswith("Epoch") and isinstance(vals, dict):
-                                    try:
-                                        ep = int(ek.replace("Epoch", ""))
-                                    except Exception:
-                                        ep = None
-                                    if ep is not None:
-                                        data.append({"epoch": ep, "metrics": vals})
-                    except Exception:
-                        pass
-                    buf = []
-                continue
-            buf.append(line)
-        if buf:
-            block = "".join(buf)
+        try:
+            obj = json.load(f)
+        except Exception:
+            obj = {}
+    for ek, vals in obj.items():
+        if ek.startswith("Epoch") and isinstance(vals, dict):
             try:
-                obj = json.loads(block)
-                if isinstance(obj, dict):
-                    for ek, vals in obj.items():
-                        if ek.startswith("Epoch") and isinstance(vals, dict):
-                            try:
-                                ep = int(ek.replace("Epoch", ""))
-                            except Exception:
-                                ep = None
-                            if ep is not None:
-                                data.append({"epoch": ep, "metrics": vals})
+                ep = int(ek.replace("Epoch", ""))
             except Exception:
-                pass
+                continue
+            data.append({"epoch": ep, "metrics": vals})
     if not data:
         return
     prefixes = ["eval"]
@@ -1401,14 +1376,19 @@ def test_one_epoch(
     if accelerator.is_main_process and hasattr(args, "output_dir"):
         out_root = os.path.join(args.output_dir)
         os.makedirs(out_root, exist_ok=True)
-        # write metric.json as hierarchical per-epoch line
+        # write metric.json as aggregated JSON object
         mjson = os.path.join(out_root, "metric.json")
         ep_key = f"Epoch{int(epoch)}"
-        ep_obj = {ep_key: {}}
-        for name, val in results.items():
-            ep_obj[ep_key][name] = float(val)
-        with open(mjson, "a", encoding="utf-8") as jf:
-            jf.write(json.dumps(ep_obj, indent=2, ensure_ascii=False) + "\n\n")
+        obj = {}
+        if os.path.exists(mjson):
+            try:
+                with open(mjson, "r", encoding="utf-8") as rf:
+                    obj = json.load(rf)
+            except Exception:
+                obj = {}
+        obj[ep_key] = {name: float(val) for name, val in results.items()}
+        with open(mjson, "w", encoding="utf-8") as wf:
+            json.dump(obj, wf, indent=2, ensure_ascii=False)
         # write metric.txt table (header once; ordered by categories)
         mtxt = os.path.join(out_root, "metric.txt")
         keys = sorted(list(results.keys()))
@@ -1462,14 +1442,23 @@ def test_one_epoch(
         with open(outp, "a", encoding="utf-8") as f:
             f.write(json.dumps(line) + "\n")
         # write new metric_views.json as hierarchical dict per epoch
-        epoch_dict = {f"epoch{epoch}": {}}
+        ep_key2 = f"epoch{epoch}"
+        views_obj = {}
         for vi in range(num_views):
             vm = {}
             for m in metrics:
                 vm[m] = float(np.mean(per_view_metrics[m].get(vi, [])))
-            epoch_dict[f"epoch{epoch}"][f"view{vi+1}"] = vm
-        with open(outp_new_json, "a", encoding="utf-8") as f2:
-            f2.write(json.dumps(epoch_dict, indent=2, ensure_ascii=False) + "\n\n")
+            views_obj[f"view{vi+1}"] = vm
+        mv_obj = {}
+        if os.path.exists(outp_new_json):
+            try:
+                with open(outp_new_json, "r", encoding="utf-8") as rf:
+                    mv_obj = json.load(rf)
+            except Exception:
+                mv_obj = {}
+        mv_obj[ep_key2] = views_obj
+        with open(outp_new_json, "w", encoding="utf-8") as wf:
+            json.dump(mv_obj, wf, indent=2, ensure_ascii=False)
         # write new metric_views.txt as space-separated table
         if not os.path.exists(outp_new_txt):
             with open(outp_new_txt, "w", encoding="utf-8") as ft:
