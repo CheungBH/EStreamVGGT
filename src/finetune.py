@@ -1373,6 +1373,46 @@ def test_one_epoch(
         for k, meter in metric_logger.meters.items()
         for tag, attr in aggs
     }
+    # write consolidated global metrics to metric.json and metric.txt at root output_dir
+    if accelerator.is_main_process and hasattr(args, "output_dir"):
+        out_root = os.path.join(args.output_dir)
+        os.makedirs(out_root, exist_ok=True)
+        # consolidate to base names (loss, depth_*, pose_*, pts3d_*, track/conf)
+        consolidated = {}
+        def pick(base):
+            key = base + "_avg"
+            if key in results:
+                consolidated[base] = float(results[key])
+            elif base in results:
+                consolidated[base] = float(results[base])
+        # loss
+        pick("loss"); pick("pose_loss")
+        # depth
+        for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253"):
+            pick(k)
+        # pose
+        for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
+            pick(k)
+        # pts3d
+        for k in ("pts3d_chamfer_l1","pts3d_chamfer_l2","pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med"):
+            pick(k)
+        # track/conf
+        for k in ("track_conf_mean","track_vis_ratio","conf_mean"):
+            pick(k)
+        # write metric.json (newline json)
+        mjson = os.path.join(out_root, "metric.json")
+        with open(mjson, "a", encoding="utf-8") as jf:
+            for name, val in consolidated.items():
+                jf.write(json.dumps({"epoch": int(epoch), "name": name, "value": val}) + "\n")
+        # write metric.txt table (header once)
+        mtxt = os.path.join(out_root, "metric.txt")
+        order = list(consolidated.keys())
+        if not os.path.exists(mtxt):
+            with open(mtxt, "w", encoding="utf-8") as tf:
+                tf.write("epoch " + " ".join(order) + "\n")
+        with open(mtxt, "a", encoding="utf-8") as tf:
+            vals = [str(int(epoch))] + [f"{consolidated[k]:.6f}" for k in order]
+            tf.write(" ".join(vals) + "\n")
     # write per-view metrics (paper subset) to metric_view.txt on main process
     if accelerator.is_main_process and hasattr(args, "output_dir"):
         outp = os.path.join(args.output_dir, "metric_view.txt")
