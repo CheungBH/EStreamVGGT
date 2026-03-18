@@ -17,7 +17,7 @@ class Waymo_Multi(BaseMultiViewDataset):
         self.max_interval = 8
         self.video = True
         self.is_metric = True
-        assert modality in ("rgb", "event", "rgb_first_event", "rgb_event_loop")
+        assert modality in ("rgb", "event", "rgb_first_event", "rgb_event_loop", "rgb_empty")
         self.modality = modality
         self.event_dir = event_dir
         self.event_suffix = event_suffix
@@ -172,6 +172,16 @@ class Waymo_Multi(BaseMultiViewDataset):
                     image = imread_cv2(osp.join(scene_dir, impath + ".jpg"))
                 else:
                     image = self._read_event_image(scene_dir, impath)
+            elif self.modality == "rgb_empty":
+                if v == 0:
+                    image = imread_cv2(osp.join(scene_dir, impath + ".jpg"))
+                else:
+                    base = imread_cv2(osp.join(scene_dir, impath + ".jpg"))
+                    image = np.ones_like(base, dtype=base.dtype)
+                    if image.dtype == np.uint8:
+                        image[:] = 255
+                    else:
+                        image[:] = 1
             else:  # "rgb_event_loop"
                 if v % 2 == 0:
                     image = imread_cv2(osp.join(scene_dir, impath + ".jpg"))
