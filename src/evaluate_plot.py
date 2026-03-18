@@ -245,11 +245,15 @@ def main():
                 consolidated[pfx] = float(np.mean(vals))
         avg_prefix("Regr3DPose_pts3d")
         avg_prefix("Regr3DPose_ScaleInv_pts3d")
-        # write metric.json (newline json, include avg/med keys verbatim)
+        # write metric.json as hierarchical per-epoch line: {"EpochX": {metric: value, ...}}
         jpath = os.path.join(out_eval, "metric.json")
+        ep_key = f"Epoch{int(eidx)}"
+        ep_obj = {ep_key: {}}
+        for name, val in (stats or {}).items():
+            ep_obj[ep_key][name] = float(val)
+
         with open(jpath, "a", encoding="utf-8") as jf:
-            for name, val in (stats or {}).items():
-                jf.write(json.dumps({"epoch": int(eidx), "name": name, "value": float(val)}) + "\n")
+            jf.write(json.dumps(ep_obj) + "\n")
         # write metric.txt as space-separated table (header + rows)
         tpath = os.path.join(out_eval, "metric.txt")
         keys = sorted(list((stats or {}).keys()))

@@ -693,15 +693,22 @@ def plot_category_dashboards(output_dir):
                 continue
             try:
                 obj = json.loads(line)
-                if isinstance(obj, dict) and "epoch" in obj and "name" in obj and "value" in obj:
-                    data.append(obj)
             except Exception:
                 continue
+            if not isinstance(obj, dict):
+                continue
+            for ek, vals in obj.items():
+                if not ek.startswith("Epoch"):
+                    continue
+                try:
+                    ep = int(ek.replace("Epoch", ""))
+                except Exception:
+                    continue
+                if isinstance(vals, dict):
+                    data.append({"epoch": ep, "metrics": vals})
     if not data:
         return
-    prefixes = []
-    for obj in data:
-        prefixes.append("eval")
+    prefixes = ["eval"]
     prefixes = sorted(list(set(prefixes)))
     cat_map = {
         "depth_error": [
@@ -737,18 +744,15 @@ def plot_category_dashboards(output_dir):
     os.makedirs(outdir, exist_ok=True)
     def collect_series(prefix, keys):
         series = {}
-        # JSON lines with {"epoch": e, "name": metric, "value": v}
-        by_metric = {}
-        for obj in data:
-            if not isinstance(obj, dict):
-                continue
-            name = obj.get("name")
-            if name in keys:
+        for k in keys:
+            pts = []
+            for obj in data:
                 ep = obj.get("epoch")
-                val = float(obj.get("value", float("nan")))
-                by_metric.setdefault(name, []).append((ep, val))
-        for k, pts in by_metric.items():
-            series[k] = sorted(pts, key=lambda x: x[0])
+                vals = obj.get("metrics", {})
+                if k in vals:
+                    pts.append((ep, float(vals[k])))
+            if pts:
+                series[k] = sorted(pts, key=lambda x: x[0])
         return series
     def plot_cat(prefix, cname, keys):
         series = collect_series(prefix, keys)
@@ -1380,11 +1384,14 @@ def test_one_epoch(
     if accelerator.is_main_process and hasattr(args, "output_dir"):
         out_root = os.path.join(args.output_dir)
         os.makedirs(out_root, exist_ok=True)
-        # write metric.json (newline json; include avg/med keys verbatim)
+        # write metric.json as hierarchical per-epoch line
         mjson = os.path.join(out_root, "metric.json")
+        ep_key = f"Epoch{int(epoch)}"
+        ep_obj = {ep_key: {}}
+        for name, val in results.items():
+            ep_obj[ep_key][name] = float(val)
         with open(mjson, "a", encoding="utf-8") as jf:
-            for name, val in results.items():
-                jf.write(json.dumps({"epoch": int(epoch), "name": name, "value": val}) + "\n")
+            jf.write(json.dumps(ep_obj) + "\n")
         # write metric.txt table (header once; ordered by categories)
         mtxt = os.path.join(out_root, "metric.txt")
         keys = sorted(list(results.keys()))
