@@ -202,7 +202,7 @@ def main():
                 raise
         print(f"[{idx}/{total}] loaded weights, start test_one_epoch")
         t1 = time.time()
-        test_one_epoch(
+        stats = test_one_epoch(
             model,
             None,
             criterion,
@@ -214,9 +214,53 @@ def main():
             log_writer=None,
             prefix=str(getattr(cfg, "prefix", "eval")),
         )
+        # consolidate averaged metrics and write both metric.json (one metric per line) and a tabular metric.txt
+        prefix = str(getattr(cfg, "prefix", "eval"))
+        consolidated = {}
+        def take(key):
+            if key in (stats or {}):
+                consolidated[key] = float(stats[key])
+        # loss
+        take("loss"); take("pose_loss")
+        # depth
+        for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253"):
+            take(k)
+        # pose
+        for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
+            take(k)
+        # track
+        for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
+            take(k)
+        # pts3d avg across views
+        def avg_prefix(pfx):
+            vals = [v for k, v in (stats or {}).items() if k.startswith(pfx + "/")]
+            if vals:
+                consolidated[pfx] = float(np.mean(vals))
+        avg_prefix("Regr3DPose_pts3d")
+        avg_prefix("Regr3DPose_ScaleInv_pts3d")
+        # write metric.json (newline json, one metric per line)
+        jpath = os.path.join(out_eval, "metric.json")
+        with open(jpath, "a", encoding="utf-8") as jf:
+            for name, val in consolidated.items():
+                jf.write(json.dumps({"epoch": int(eidx), "name": name, "value": val}) + "\n")
+        # write metric.txt as space-separated table (header + rows)
+        tpath = os.path.join(out_eval, "metric.txt")
+        order = []
+        order += [k for k in ("loss","pose_loss") if k in consolidated]
+        order += [k for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253") if k in consolidated]
+        order += [k for k in ("pose_rot_deg","pose_trans_err","pose_auc30") if k in consolidated]
+        order += [k for k in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d") if k in consolidated]
+        order += [k for k in ("conf_mean","track_conf_mean","track_vis_ratio") if k in consolidated]
+        if not os.path.exists(tpath):
+            with open(tpath, "w", encoding="utf-8") as tf:
+                tf.write("epoch " + " ".join(order) + "\n")
+        with open(tpath, "a", encoding="utf-8") as tf:
+            vals = [str(int(eidx))] + [f"{consolidated[k]:.6f}" for k in order]
+            tf.write(" ".join(vals) + "\n")
         dt = time.time() - t0
         print(f"[{idx}/{total}] done {os.path.basename(path)} in {dt:.1f}s (load {t1 - t0:.1f}s, eval {dt - (t1 - t0):.1f}s)")
     plot_per_view(out_eval, str(getattr(cfg, "modality")), int(getattr(cfg, "num_test_views")), str(getattr(cfg, "prefix", "eval")))
+    ft.plot_category_dashboards(out_eval)
 
 
 if __name__ == "__main__":

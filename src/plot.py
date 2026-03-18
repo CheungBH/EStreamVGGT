@@ -169,29 +169,61 @@ def plot_category_dashboards(output_dir):
         return
     data = []
     with open(mpath, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+        # detect table vs jsonlines
+        first = f.readline()
+        if not first:
+            return
+        first = first.strip()
+        if first.startswith("{"):
+            # JSON lines (legacy)
             try:
-                obj = json.loads(line)
+                obj = json.loads(first)
+                data.append(obj)
             except Exception:
-                continue
-            data.append(obj)
+                pass
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                data.append(obj)
+        else:
+            # space-separated table: header "epoch metric1 metric2 ..."
+            headers = first.split()
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) != len(headers):
+                    continue
+                ep = int(parts[0])
+                vals = {headers[i]: float(parts[i]) for i in range(1, len(headers))}
+                data.append({"epoch": ep, "metrics": vals})
     if not data:
         return
     prefixes = []
     for obj in data:
-        for k in obj.keys():
-            if k != "epoch":
-                prefixes.append(k)
+        if "metrics" in obj:
+            prefixes.append("table")
+        else:
+            for k in obj.keys():
+                if k != "epoch":
+                    prefixes.append(k)
     prefixes = sorted(list(set(prefixes)))
     def build_cat_map(prefix):
         keys = set()
         for obj in data:
-            vals = obj.get(prefix, {})
-            if isinstance(vals, dict):
+            if "metrics" in obj and prefix == "table":
+                vals = obj.get("metrics", {})
                 keys |= set(vals.keys())
+            else:
+                vals = obj.get(prefix, {})
+                if isinstance(vals, dict):
+                    keys |= set(vals.keys())
         depth = sorted([k for k in keys if k.startswith("depth_")])
         pose = sorted([k for k in keys if k.startswith("pose_") or k.startswith("Regr3DPose")])
         geometry = sorted([k for k in keys if k.startswith("pts3d_")])
@@ -232,7 +264,7 @@ def plot_category_dashboards(output_dir):
         series = {}
         for obj in data:
             ep = obj.get("epoch")
-            vals = obj.get(prefix, {})
+            vals = obj.get("metrics", {}) if prefix == "table" else obj.get(prefix, {})
             for k in keys:
                 if k in vals and isinstance(ep, (int, float)):
                     series.setdefault(k, []).append((ep, float(vals[k])))

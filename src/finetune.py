@@ -383,28 +383,51 @@ def train(args):
             if log_writer is not None:
                 log_writer.flush()
 
-            log_stats = dict(
-                epoch=epoch, **{f"train_{k}": v for k, v in train_stats.items()}
-            )
+            log_stats = dict(epoch=epoch, **{f"train_{k}": v for k, v in train_stats.items()})
+            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                f.write(json.dumps(log_stats) + "\n")
             for test_name in data_loader_test:
                 if test_name not in test_stats:
                     continue
-                log_stats.update(
-                    {test_name + "_" + k: v for k, v in test_stats[test_name].items()}
-                )
-
-            with open(
-                os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8"
-            ) as f:
-                f.write(json.dumps(log_stats) + "\n")
-            metrics_line = {"epoch": epoch}
-            for test_name in data_loader_test:
-                if test_name in test_stats:
-                    metrics_line[test_name] = test_stats[test_name]
-            with open(
-                os.path.join(args.output_dir, "metric.txt"), mode="a", encoding="utf-8"
-            ) as f:
-                f.write(json.dumps(metrics_line) + "\n")
+                stats = test_stats[test_name]
+                consolidated = {}
+                def take(base):
+                    key = base + "_avg"
+                    if key in stats:
+                        consolidated[base] = float(stats[key])
+                    elif base in stats:
+                        consolidated[base] = float(stats[base])
+                take("loss"); take("pose_loss")
+                for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253"):
+                    take(k)
+                for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
+                    take(k)
+                for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
+                    take(k)
+                for pfx in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d"):
+                    vals = [v for k, v in stats.items() if k.startswith(pfx + "/")]
+                    if vals:
+                        consolidated[pfx] = float(np.mean(vals))
+                out_eval = os.path.join(args.output_dir, test_name.replace(" ", "_").replace("/", "_"))
+                os.makedirs(out_eval, exist_ok=True)
+                jpath = os.path.join(out_eval, "metric.json")
+                with open(jpath, "a", encoding="utf-8") as jf:
+                    for name, val in consolidated.items():
+                        jf.write(json.dumps({"epoch": int(epoch), "name": name, "value": val}) + "\n")
+                tpath = os.path.join(out_eval, "metric.txt")
+                order = []
+                order += [k for k in ("loss","pose_loss") if k in consolidated]
+                order += [k for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253") if k in consolidated]
+                order += [k for k in ("pose_rot_deg","pose_trans_err","pose_auc30") if k in consolidated]
+                order += [k for k in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d") if k in consolidated]
+                order += [k for k in ("conf_mean","track_conf_mean","track_vis_ratio") if k in consolidated]
+                if not os.path.exists(tpath):
+                    with open(tpath, "w", encoding="utf-8") as tf:
+                        tf.write("epoch " + " ".join(order) + "\n")
+                with open(tpath, "a", encoding="utf-8") as tf:
+                    vals = [str(int(epoch))] + [f"{consolidated[k]:.6f}" for k in order]
+                    tf.write(" ".join(vals) + "\n")
+                plot_category_dashboards(out_eval)
 
     def save_model(epoch, fname, best_so_far, data_iter_step):
         misc.save_model(
@@ -1175,7 +1198,12 @@ def test_one_epoch(
                     depth_delta_1252s.append(d1252)
                     depth_delta_1253s.append(d1253)
                     _agg("depth_absrel", vi, rel)
+                    _agg("depth_rmse", vi, rmse)
+                    _agg("depth_log_rmse", vi, log_rmse)
+                    _agg("depth_si_rmse", vi, si_rmse)
                     _agg("depth_delta_125", vi, d125)
+                    _agg("depth_delta_1252", vi, d1252)
+                    _agg("depth_delta_1253", vi, d1253)
                 # pose metrics (convert 7D to 3x4 if needed)
                 gp = _pose_to_3x4(view["camera_pose"], device, model_dtype)
                 pp = _pose_to_3x4(pred_vi["camera_pose"], device, model_dtype)
@@ -1261,6 +1289,8 @@ def test_one_epoch(
                     _agg("acc_med", vi, d_pred_to_gt.median().item())
                     _agg("comp_mean", vi, d_gt_to_pred.mean().item())
                     _agg("comp_med", vi, d_gt_to_pred.median().item())
+                    _agg("pts3d_chamfer_l1", vi, l1)
+                    _agg("pts3d_chamfer_l2", vi, l2)
                     pr_grid = pr.reshape(B, H, W, 3)
                     gt_grid = gt_world.reshape(B, H, W, 3)
                     dx_pr = pr_grid[:, :, 1:, :] - pr_grid[:, :, :-1, :]
@@ -1279,6 +1309,7 @@ def test_one_epoch(
                     _agg("nc_med", vi, cos.median().item())
                 pr_conf = pred_vi["conf"]
                 conf_means.append(pr_conf.mean().item())
+                _agg("conf_mean", vi, pr_conf.mean().item())
                 tconf = pred_vi["track_conf"]
                 tvis = pred_vi["vis"]
                 track_conf_means.append(tconf.mean().item())
@@ -1322,16 +1353,27 @@ def test_one_epoch(
     # write per-view metrics (paper subset) to metric_view.txt on main process
     if accelerator.is_main_process and hasattr(args, "output_dir"):
         outp = os.path.join(args.output_dir, "metric_view.txt")
+        outp_new_txt = os.path.join(args.output_dir, "metric_views.txt")
+        outp_new_json = os.path.join(args.output_dir, "metric_views.json")
         line = {"epoch": epoch}
         view_dict = {}
         metrics = [
-            "auc30",
+            # pose
+            "auc30", "pose_rot_deg", "pose_trans_err",
+            # geometry
             "acc_mean", "acc_med",
             "comp_mean", "comp_med",
             "nc_mean", "nc_med",
-            "depth_absrel", "depth_delta_125",
+            "pts3d_chamfer_l1", "pts3d_chamfer_l2",
+            # depth
+            "depth_absrel", "depth_rmse", "depth_log_rmse", "depth_si_rmse",
+            "depth_delta_125", "depth_delta_1252", "depth_delta_1253",
+            # tracking / conf
+            "conf_mean", "track_conf_mean", "track_vis_ratio",
         ]
         num_views = int(getattr(args, "num_test_views", 0) or 0)
+        merged_rows = []
+        merged_headers = ["epoch", "view"] + metrics
         for m in metrics:
             for vi in range(num_views):
                 arr = per_view_metrics[m].get(vi, [])
@@ -1339,9 +1381,25 @@ def test_one_epoch(
                     raise RuntimeError(f"Missing per-view data for {m} v{vi+1}")
                 key = f"{m}_v{vi+1}"
                 view_dict[key] = float(np.mean(arr))
+        # write legacy metric_view.txt
         line[prefix] = view_dict
         with open(outp, "a", encoding="utf-8") as f:
             f.write(json.dumps(line) + "\n")
+        # write new metric_views.json (one view per line)
+        with open(outp_new_json, "a", encoding="utf-8") as f2:
+            for vi in range(num_views):
+                vm = {}
+                for m in metrics:
+                    vm[m] = float(np.mean(per_view_metrics[m].get(vi, [])))
+                f2.write(json.dumps({"epoch": epoch, "view": vi + 1, "metrics": vm}) + "\n")
+        # write new metric_views.txt as space-separated table
+        if not os.path.exists(outp_new_txt):
+            with open(outp_new_txt, "w", encoding="utf-8") as ft:
+                ft.write(" ".join(merged_headers) + "\n")
+        with open(outp_new_txt, "a", encoding="utf-8") as ft:
+            for vi in range(num_views):
+                row = [str(epoch), str(vi + 1)] + [f"{float(np.mean(per_view_metrics[m].get(vi, []))):.6f}" for m in metrics]
+                ft.write(" ".join(row) + "\n")
 
 
     if log_writer is not None:
