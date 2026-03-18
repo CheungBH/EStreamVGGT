@@ -32,6 +32,18 @@ def plot_per_view(output_dir, modality, num_views, prefix):
     mpath = os.path.join(output_dir, "metric_views.json")
     if not os.path.exists(mpath):
         return
+    def view_type(v, modality):
+        if modality == "rgb":
+            return "RGB"
+        if modality == "event":
+            return "event"
+        if modality == "rgb_first_event":
+            return "RGB" if v == 0 else "event"
+        if modality == "rgb_event_loop":
+            return "RGB" if (v % 2 == 0) else "event"
+        if modality == "rgb_empty":
+            return "RGB" if v == 0 else "white"
+        return "RGB"
     epoch_data = {}
     with open(mpath, "r", encoding="utf-8") as f:
         for line in f:
@@ -59,23 +71,34 @@ def plot_per_view(output_dir, modality, num_views, prefix):
         for vk, vals in views.items():
             metrics |= set(vals.keys())
     metrics = sorted(list(metrics))
-    # merged plots (average over views for each epoch)
+    # multi-line plots: one figure per metric, all views as separate lines
     for m in metrics:
-        xs, ys = [], []
+        # build per-view series
+        series = {v: [] for v in range(1, num_views + 1)}
         for ep in sorted(epoch_data.keys()):
-            vals = [float(vs[m]) for vs in epoch_data[ep].values() if m in vs]
-            if vals:
-                xs.append(ep)
-                ys.append(float(np.mean(vals)))
-        if not xs:
+            views = epoch_data[ep]
+            for v in range(1, num_views + 1):
+                vk = f"view{v}"
+                if vk in views and m in views[vk]:
+                    series[v].append((ep, float(views[vk][m])))
+        # skip empty
+        if all(len(pts) == 0 for pts in series.values()):
             continue
         plt.figure(figsize=(8, 4))
-        plt.plot(xs, ys, marker="o", linewidth=2, label=f"{m}")
+        for v, pts in series.items():
+            if not pts:
+                continue
+            pts = sorted(pts, key=lambda x: x[0])
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            lbl = f"v{v} ({view_type(v - 1, modality)})"
+            plt.plot(xs, ys, marker="o", linewidth=2, label=lbl)
         plt.xlabel("epoch")
         plt.ylabel(m)
-        plt.title(f"{prefix} - merged {m}")
+        plt.title(f"{prefix} - {m}")
         plt.grid(True, alpha=0.3)
-        safe = f"{prefix.replace(' ', '_').replace('/', '_')}__merged_{m}.png"
+        plt.legend()
+        safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{m}.png"
         plt.tight_layout()
         plt.savefig(os.path.join(base, safe))
         plt.close()
