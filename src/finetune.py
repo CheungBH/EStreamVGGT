@@ -685,23 +685,57 @@ def plot_category_dashboards(output_dir):
     if not os.path.exists(mpath):
         return
     data = []
+    header = None
     with open(mpath, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
+            # prefer JSON lines when available
+            obj = None
             try:
-                obj = json.loads(line)
+                parsed = json.loads(line)
+                if isinstance(parsed, dict):
+                    obj = parsed
+                else:
+                    # ignore non-dict JSON (e.g., integers)
+                    obj = None
             except Exception:
+                obj = None
+            if obj is not None:
+                data.append(obj)
                 continue
-            data.append(obj)
+            # fallback: parse space-delimited table written by evaluate_plot.py
+            toks = line.split()
+            if not toks:
+                continue
+            if header is None and toks[0].lower() == "epoch":
+                header = toks  # e.g., ["epoch", "loss", "pose_loss", ...]
+                continue
+            if header is not None:
+                # expect same number of columns
+                if len(toks) != len(header):
+                    continue
+                try:
+                    ep = int(float(toks[0]))
+                    vals = {}
+                    for k, v in zip(header[1:], toks[1:]):
+                        try:
+                            vals[k] = float(v)
+                        except Exception:
+                            pass
+                    # synthesize a prefix "eval" for table rows
+                    data.append({"epoch": ep, "eval": vals})
+                except Exception:
+                    continue
     if not data:
         return
     prefixes = []
     for obj in data:
-        for k in obj.keys():
-            if k != "epoch":
-                prefixes.append(k)
+        if isinstance(obj, dict):
+            for k in obj.keys():
+                if k != "epoch":
+                    prefixes.append(k)
     prefixes = sorted(list(set(prefixes)))
     cat_map = {
         "depth_error": [
@@ -1036,15 +1070,31 @@ def test_one_epoch(
 
     # per-view aggregation across the whole epoch
     per_view_metrics = {
-        "depth_absrel": {},
-        "depth_delta_125": {},
+        # pose
         "auc30": {},
+        "pose_rot_deg": {},
+        "pose_trans_err": {},
+        # geometry
         "acc_mean": {},
         "acc_med": {},
         "comp_mean": {},
         "comp_med": {},
         "nc_mean": {},
         "nc_med": {},
+        "pts3d_chamfer_l1": {},
+        "pts3d_chamfer_l2": {},
+        # depth
+        "depth_absrel": {},
+        "depth_rmse": {},
+        "depth_log_rmse": {},
+        "depth_si_rmse": {},
+        "depth_delta_125": {},
+        "depth_delta_1252": {},
+        "depth_delta_1253": {},
+        # tracking / conf
+        "conf_mean": {},
+        "track_conf_mean": {},
+        "track_vis_ratio": {},
     }
     def _agg(metric_name, vi, val):
         if metric_name not in per_view_metrics:
