@@ -54,14 +54,17 @@ def aggregate_events(x, y, t, p, t0, t1, H, W):
     xs = x[mask]
     ys = y[mask]
     ps = p[mask]
+
     img = np.zeros((H, W, 3), dtype=np.uint8)
     if xs.size == 0:
         return img
+
     pos = ps > 0
-    neg = ~pos
-    img[ys[pos], xs[pos], 0] = 255
-    img[ys[neg], xs[neg], 1] = 255
-    img[..., 2] = np.maximum(img[..., 0], img[..., 1])
+    neg = ps == 0
+    
+    img[ys[pos], xs[pos]] = [255, 0, 0]
+    img[ys[neg], xs[neg]] = [0, 0, 255]
+    
     return img
 
 

@@ -20,11 +20,15 @@ def get_intrinsics_from_h5(f, cam_path):
 def aggregate_events_xy_p(xs, ys, ps, H, W):
     img = np.zeros((H, W, 3), dtype=np.uint8)
 
+    # p == 0 -> [0, 0, 255] (Red in BGR, Blue in RGB - assuming BGR for cv2)
+    # p == 1 -> [255, 0, 0] (Blue in BGR, Red in RGB - assuming BGR for cv2)
+    # Since cv2.imwrite expects BGR, [0, 0, 255] is Red, [255, 0, 0] is Blue
     pos = ps > 0
-    neg = ~pos
-    img[ys[pos], xs[pos], 0] = 255
-    img[ys[neg], xs[neg], 1] = 255
-    img[..., 2] = np.maximum(img[..., 0], img[..., 1])
+    neg = ps == 0
+    
+    img[ys[pos], xs[pos]] = [255, 0, 0]
+    img[ys[neg], xs[neg]] = [0, 0, 255]
+    
     return img
 
 def find_nearest_idx(timestamps, target_t):
