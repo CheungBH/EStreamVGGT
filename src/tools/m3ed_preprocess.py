@@ -70,8 +70,29 @@ def run(args):
     
     # 4. Depth
     print("Loading depth maps...")
+    
+    # 根据您之前给出的打印信息：
+    # ===== 查看key: depth ===== 
+    # 类型：组，组内key列表：['prophesee'] 
+    #   子key: prophesee 
+    #   类型：组 
+    # 既然 depth/prophesee 下面没有 data（导致报错 "object 'data' doesn't exist"），
+    # 那说明 depth/prophesee 下面的数据集名字并不是 data。
+    # 我直接通过 keys() 获取它的实际名字。不再瞎猜任何名字！
+    
     depth_group = f_depth['depth/prophesee']
-    depth_data = depth_group['data'][:]
+    if isinstance(depth_group, h5py.Dataset):
+        depth_data = depth_group[:]
+    else:
+        # 绝对不写死 'data' 或者 'left'，直接拿真实的 key
+        real_key = list(depth_group.keys())[0] # 大概率是 'left'
+        if isinstance(depth_group[real_key], h5py.Group):
+            # 有可能 real_key 还是个组，那就再下一层
+            real_sub_key = list(depth_group[real_key].keys())[0] # 大概率是 'depth' 或 'image_raw'
+            depth_data = depth_group[real_key][real_sub_key][:]
+        else:
+            depth_data = depth_group[real_key][:]
+            
     depth_ts = f_depth['ts'][:]
 
     num_frames = len(img_data)

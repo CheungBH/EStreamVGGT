@@ -121,6 +121,7 @@ class DSEC_Multi(BaseMultiViewDataset):
                 image = imread_cv2(osp.join(scene_dir, impath + ".png"))
             elif self.modality == "event":
                 image = self._read_event_image(scene_dir, impath)
+                # Event image was rendered such that positive=blue, negative=red (BGR order)
             elif self.modality == "rgb_first_event":
                 if v == 0:
                     image = imread_cv2(osp.join(scene_dir, impath + ".png"))

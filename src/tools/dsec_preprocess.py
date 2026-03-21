@@ -87,8 +87,25 @@ def run(args):
     if not imgs:
         raise RuntimeError("no images found")
     H0, W0 = np.array(Image.open(imgs[0])).shape[:2]
-    K = read_intrinsics(osp.join(args.src, args.intrinsics))
-    mats = read_extrinsics_per_frame(osp.join(args.src, args.extrinsics), len(imgs))
+    
+    # Read calibration from official DSEC format (cam_to_cam.yaml)
+    calib_path = osp.join(args.src, "calibration", "cam_to_cam.yaml")
+    if not osp.exists(calib_path):
+        raise RuntimeError(f"Calibration file not found at {calib_path}")
+    K = read_intrinsics(calib_path)
+    
+    # DSEC Ground Truth poses:
+    # Actually, DSEC does not officially provide 'poses.txt' in the base dataset.
+    # Poses (trajectory) are often provided in a separate file (e.g. trajectory.csv) 
+    # or sometimes not at all for test sequences. 
+    # Let's fallback to identity if a pose file isn't explicitly provided or found.
+    # We will use the provided --pose_file arg or fallback to identity.
+    pose_file = getattr(args, 'pose_file', None)
+    if pose_file and osp.exists(pose_file):
+        mats = read_extrinsics_per_frame(pose_file, len(imgs))
+    else:
+        print(f"Warning: No valid pose file provided/found. Using identity matrices for cam2world.")
+        mats = [np.eye(4, dtype=np.float32) for _ in range(len(imgs))]
     
     x, y, te, p = load_events(osp.join(args.src, args.events_h5))
     ts = np.loadtxt(osp.join(args.src, args.timestamps_txt)).astype(np.float64) / 1e6 # assuming timestamps are in microseconds
@@ -122,16 +139,15 @@ def run(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", type=str, required=True)
-    ap.add_argument("--dst", type=str, required=True)
-    ap.add_argument("--name", type=str, required=True)
-    ap.add_argument("--images_glob", type=str, required=True)
-    ap.add_argument("--events_h5", type=str, required=True)
-    ap.add_argument("--timestamps_txt", type=str, required=True)
-    ap.add_argument("--intrinsics", type=str, required=True)
-    ap.add_argument("--extrinsics", type=str, required=True)
-    ap.add_argument("--disparity_glob", type=str, required=True)
-    ap.add_argument("--baseline", type=float, default=0.1)
+    ap.add_argument("--src", type=str, required=True, help="Path to sequence root (e.g. /path/to/zurich_city_04_a)")
+    ap.add_argument("--dst", type=str, required=True, help="Output root directory")
+    ap.add_argument("--name", type=str, required=True, help="Output sequence name")
+    ap.add_argument("--images_glob", type=str, default="images/left/rectified/*.png")
+    ap.add_argument("--events_h5", type=str, default="events/left/events.h5")
+    ap.add_argument("--timestamps_txt", type=str, default="images/left/exposure_timestamps.txt")
+    ap.add_argument("--disparity_glob", type=str, default="disparity/train/left/rectified/*.png")
+    ap.add_argument("--baseline", type=float, default=0.1) # DSEC stereo baseline is roughly 10cm
+    ap.add_argument("--pose_file", type=str, default="", help="Optional path to pose file if available")
     ap.add_argument("--event_window_ms", type=float, default=30.0)
     args = ap.parse_args()
     run(args)
