@@ -5,7 +5,6 @@ import numpy as np
 import cv2
 import h5py
 import yaml
-from PIL import Image
 from scipy.spatial.transform import Rotation as R
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
@@ -77,16 +76,20 @@ def aggregate_events(x, y, t, p, t0, t1, H, W):
     xs = x[mask]
     ys = y[mask]
     ps = p[mask]
-    
+
+    return aggregate_events_xy_p(xs, ys, ps, H, W)
+
+
+def aggregate_events_xy_p(xs, ys, ps, H, W):
     img = np.zeros((H, W, 3), dtype=np.uint8)
     if xs.size == 0:
         return img
-    
+
     pos = ps > 0
     neg = ~pos
-    img[ys[pos], xs[pos], 0] = 255 # Red for positive
-    img[ys[neg], xs[neg], 1] = 255 # Green for negative
-    img[..., 2] = np.maximum(img[..., 0], img[..., 1]) # Yellow for overlap
+    img[ys[pos], xs[pos], 0] = 255
+    img[ys[neg], xs[neg], 1] = 255
+    img[..., 2] = np.maximum(img[..., 0], img[..., 1])
     return img
 
 def project_lidar_to_depth(points, K, T_cam_lidar, H, W):
@@ -156,14 +159,18 @@ def run(args):
     img_ts = img_group['ts'][:] if 'ts' in img_group else img_group['t'][:]
     
     # 2. Events
-    ev_group = f.get('events/left') or f.get('prophesee/left') or f.get('events')
+    ev_group = f.get("/prophesee/left") or f.get("prophesee/left") or f.get("events/left") or f.get("events")
     has_events = ev_group is not None
+    ts_map = None
     if has_events:
         print("Loading events...")
-        ev_x = ev_group['x'][:]
-        ev_y = ev_group['y'][:]
-        ev_t = ev_group['ts'][:] if 'ts' in ev_group else ev_group['t'][:]
-        ev_p = ev_group['p'][:]
+        ev_x = ev_group["x"][:]
+        ev_y = ev_group["y"][:]
+        ev_t = ev_group["ts"][:] if "ts" in ev_group else ev_group["t"][:]
+        ev_p = ev_group["p"][:]
+        ts_map = f.get("/ovc/ts_map_prophesee_left_t") or f.get("ovc/ts_map_prophesee_left_t")
+        if ts_map is not None:
+            ts_map = np.asarray(ts_map, dtype=np.int64)
     
     # 3. Poses
     pose_group = f.get('poses/gt') or f.get('poses/stamped_poses')
@@ -197,12 +204,12 @@ def run(args):
         frame_id = f"{i:06d}"
         
         # Decode image
-        if img_data.dtype == np.uint8 and img_data.ndim == 1:
-            # JPEG encoded
-            img_np = cv2.imdecode(img_data[i], cv2.IMREAD_COLOR)
+        img_i = img_data[i]
+        if isinstance(img_i, np.ndarray) and img_i.dtype == np.uint8 and img_i.ndim == 1:
+            img_np = cv2.imdecode(img_i, cv2.IMREAD_COLOR)
         else:
-            img_np = img_data[i]
-            if img_np.shape[0] == 3: # CHW to HWC
+            img_np = np.asarray(img_i)
+            if img_np.ndim == 3 and img_np.shape[0] == 3:
                 img_np = img_np.transpose(1, 2, 0)
         
         H, W = img_np.shape[:2]
@@ -210,13 +217,28 @@ def run(args):
         
         # Process Events
         if has_events:
-            t1 = ts_target
-            t0 = t1 - (args.event_window_ms * 1e-3) # assuming timestamps are in seconds
-            # if timestamps are in microseconds, adjust accordingly
-            if ev_t[0] > 1e12: # likely microseconds
-                t0 = t1 - (args.event_window_ms * 1e3)
-            
-            ev_img = aggregate_events(ev_x, ev_y, ev_t, ev_p, t0, t1, H, W)
+            if args.event_mode in ("between_images", "center_n_events") and ts_map is not None:
+                center = int(ts_map[i])
+                if args.event_mode == "between_images":
+                    start = center
+                    if i + 1 < len(ts_map):
+                        stop = int(ts_map[i + 1])
+                    else:
+                        stop = min(center + int(args.n_events), ev_x.shape[0])
+                else:
+                    half = int(args.n_events) // 2
+                    start = max(0, center - half)
+                    stop = min(ev_x.shape[0], center + half)
+
+                ev_img = aggregate_events_xy_p(ev_x[start:stop], ev_y[start:stop], ev_p[start:stop], H, W)
+            else:
+                t1 = ts_target
+                if ev_t[0] > 1e12:
+                    t0 = t1 - (args.event_window_ms * 1e3)
+                else:
+                    t0 = t1 - (args.event_window_ms * 1e-3)
+                ev_img = aggregate_events(ev_x, ev_y, ev_t, ev_p, t0, t1, H, W)
+
             cv2.imwrite(osp.join(args.dst, f"{frame_id}_event.png"), ev_img)
             
         # Process Poses
@@ -252,8 +274,10 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_h5", type=str, required=True, help="Path to M3ED HDF5 file")
-    parser.add_argument("--calib_yaml", type=str, required=True, help="Path to calibration YAML file")
+    parser.add_argument("--data_h5", type=str, required=True, help="M3ED sensor HDF5 (images/events/lidar, etc.)")
+    parser.add_argument("--depth_h5", type=str, default="", help="(optional) Separate official depth GT HDF5; if provided, it will be used to generate .exr")
+    parser.add_argument("--pose_h5", type=str, default="", help="(optional) Separate official pose GT HDF5; if provided, it will be used to generate cam2world")
+    parser.add_argument("--calib_yaml", type=str, required=True, help="Calibration YAML (for K and T_cam_lidar)")
     parser.add_argument("--dst", type=str, required=True, help="Output directory")
     parser.add_argument("--event_window_ms", type=float, default=30.0, help="Event aggregation window in milliseconds")
     args = parser.parse_args()
