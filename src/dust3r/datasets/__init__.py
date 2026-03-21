@@ -34,6 +34,7 @@ from .vkitti2 import VirtualKITTI2_Multi  # noqa
 from .waymo import Waymo_Multi  # noqa
 from .wildrgbd import WildRGBD_Multi  # noqa
 from .dsec import DSEC_Multi  # noqa
+from .m3ed import M3ED_Multi
 
 
 from accelerate import Accelerator
