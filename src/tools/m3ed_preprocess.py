@@ -140,18 +140,48 @@ def project_lidar_to_depth(points, K, T_cam_lidar, H, W):
 def find_nearest_idx(timestamps, target_t):
     return np.argmin(np.abs(timestamps - target_t))
 
+def find_group_by_keywords(f, keywords):
+    """
+    Helper function to find a group or dataset in an HDF5 file
+    by matching any of the given keywords in the keys.
+    """
+    for key in f.keys():
+        for kw in keywords:
+            if kw in key.lower():
+                return f[key]
+    # If not found at top level, check one level deeper
+    for key in f.keys():
+        if isinstance(f[key], h5py.Group):
+            for subkey in f[key].keys():
+                for kw in keywords:
+                    if kw in subkey.lower():
+                        return f[key][subkey]
+    return None
+
 def run(args):
     os.makedirs(args.dst, exist_ok=True)
     
-    print(f"Reading HDF5 file: {args.data_h5}")
+    print(f"Reading data HDF5: {args.data_h5}")
     f = h5py.File(args.data_h5, 'r')
     
+    f_depth = None
+    f_pose = None
+    if args.depth_h5:
+        print(f"Reading depth GT HDF5: {args.depth_h5}")
+        f_depth = h5py.File(args.depth_h5, 'r')
+    if args.pose_h5:
+        print(f"Reading pose GT HDF5: {args.pose_h5}")
+        f_pose = h5py.File(args.pose_h5, 'r')
+
+    depth_src = f_depth if f_depth is not None else f
+    pose_src = f_pose if f_pose is not None else f
+
     # Load calibration
     K, T_cam_lidar = read_calibration(args.calib_yaml)
     print(f"Loaded Intrinsics K:\n{K}")
     
     # 1. Images
-    img_group = f.get('images/left') or f.get('ovc/left') or f.get('rgb/image_raw')
+    img_group = f.get('images/left') or f.get('/ovc/left') or f.get('rgb/image_raw') or find_group_by_keywords(f, ['image', 'ovc', 'rgb'])
     if img_group is None:
         raise ValueError("Cannot find image group in HDF5")
         
@@ -159,7 +189,7 @@ def run(args):
     img_ts = img_group['ts'][:] if 'ts' in img_group else img_group['t'][:]
     
     # 2. Events
-    ev_group = f.get("/prophesee/left") or f.get("prophesee/left") or f.get("events/left") or f.get("events")
+    ev_group = f.get("/prophesee/left") or f.get("prophesee/left") or f.get("events/left") or f.get("events") or find_group_by_keywords(f, ['event', 'prophesee'])
     has_events = ev_group is not None
     ts_map = None
     if has_events:
@@ -173,23 +203,23 @@ def run(args):
             ts_map = np.asarray(ts_map, dtype=np.int64)
     
     # 3. Poses
-    pose_group = f.get('poses/gt') or f.get('poses/stamped_poses')
+    pose_group = pose_src.get("poses/gt") or pose_src.get("/poses/gt") or pose_src.get("poses/stamped_poses") or pose_src.get("/poses/stamped_poses") or find_group_by_keywords(pose_src, ['pose', 'odometry', 'gt'])
     has_poses = pose_group is not None
     if has_poses:
         print("Loading poses...")
-        pose_pos = pose_group['position'][:] if 'position' in pose_group else pose_group['tx_ty_tz'][:]
-        pose_ori = pose_group['orientation'][:] if 'orientation' in pose_group else pose_group['qx_qy_qz_qw'][:]
+        pose_pos = pose_group['position'][:] if 'position' in pose_group else (pose_group['tx_ty_tz'][:] if 'tx_ty_tz' in pose_group else pose_group['data'][:, :3])
+        pose_ori = pose_group['orientation'][:] if 'orientation' in pose_group else (pose_group['qx_qy_qz_qw'][:] if 'qx_qy_qz_qw' in pose_group else pose_group['data'][:, 3:7])
         pose_ts = pose_group['ts'][:] if 'ts' in pose_group else pose_group['t'][:]
     
     # 4. Depth / LiDAR
-    depth_group = f.get('depth/left')
+    depth_group = depth_src.get("depth/left") or depth_src.get("/depth/left") or find_group_by_keywords(depth_src, ['depth'])
     has_depth = depth_group is not None
     if has_depth:
         print("Loading depth maps...")
         depth_data = depth_group['depth'][:] if 'depth' in depth_group else depth_group['data'][:]
         depth_ts = depth_group['ts'][:] if 'ts' in depth_group else depth_group['t'][:]
         
-    lidar_group = f.get('lidar/points') or f.get('ouster')
+    lidar_group = f.get('lidar/points') or f.get('ouster') or f.get('/ouster') or find_group_by_keywords(f, ['lidar', 'ouster'])
     has_lidar = lidar_group is not None and not has_depth
     if has_lidar:
         print("Loading LiDAR points...")
@@ -270,16 +300,30 @@ def run(args):
             print(f"Processed {i}/{num_frames} frames")
             
     f.close()
+    if f_depth is not None:
+        f_depth.close()
+    if f_pose is not None:
+        f_pose.close()
     print("M3ED Preprocessing completed.")
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_h5", type=str, required=True, help="M3ED sensor HDF5 (images/events/lidar, etc.)")
-    parser.add_argument("--depth_h5", type=str, default="", help="(optional) Separate official depth GT HDF5; if provided, it will be used to generate .exr")
-    parser.add_argument("--pose_h5", type=str, default="", help="(optional) Separate official pose GT HDF5; if provided, it will be used to generate cam2world")
-    parser.add_argument("--calib_yaml", type=str, required=True, help="Calibration YAML (for K and T_cam_lidar)")
-    parser.add_argument("--dst", type=str, required=True, help="Output directory")
-    parser.add_argument("--event_window_ms", type=float, default=30.0, help="Event aggregation window in milliseconds")
+    parser.add_argument("--data_h5", type=str, required=True, help="M3ED 序列的传感器 HDF5（包含图像/事件/雷达等）")
+    parser.add_argument("--depth_h5", type=str, default="", help="(可选) 官方单独提供的 depth GT HDF5；提供则优先用于生成 .exr")
+    parser.add_argument("--pose_h5", type=str, default="", help="(可选) 官方单独提供的 pose GT HDF5；提供则优先用于生成 cam2world")
+    parser.add_argument("--calib_yaml", type=str, required=True, help="相机/雷达标定 yaml（用于 K 和 T_cam_lidar）")
+    parser.add_argument("--dst", type=str, required=True, help="输出目录（会生成四件套）")
+    
+    parser.add_argument(
+        "--event_mode",
+        type=str,
+        default="between_images",
+        choices=("between_images", "center_n_events", "time_window_ms"),
+        help="事件聚合策略：优先用 /ovc/ts_map_prophesee_left_t 按相邻两帧聚合；无映射时可退回固定时间窗",
+    )
+    parser.add_argument("--n_events", type=int, default=200000, help="center_n_events 模式下使用")
+    parser.add_argument("--event_window_ms", type=float, default=30.0, help="time_window_ms 模式下使用")
+    
     args = parser.parse_args()
     run(args)
 
