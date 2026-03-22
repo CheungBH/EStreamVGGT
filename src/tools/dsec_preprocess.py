@@ -21,6 +21,8 @@ def aggregate_events_xy_p(xs, ys, ps, H, W):
     pos = ps > 0
     neg = ps == 0
     
+    # Red for negative (BGR: [0, 0, 255]), Blue for positive (BGR: [255, 0, 0])
+    # The background is already initialized to 0 (Black).
     img[ys[pos], xs[pos]] = [255, 0, 0]
     img[ys[neg], xs[neg]] = [0, 0, 255]
     

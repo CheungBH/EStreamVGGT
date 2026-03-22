@@ -20,12 +20,11 @@ def get_intrinsics_from_h5(f, cam_path):
 def aggregate_events_xy_p(xs, ys, ps, H, W):
     img = np.zeros((H, W, 3), dtype=np.uint8)
 
-    # p == 0 -> [0, 0, 255] (Red in BGR, Blue in RGB - assuming BGR for cv2)
-    # p == 1 -> [255, 0, 0] (Blue in BGR, Red in RGB - assuming BGR for cv2)
-    # Since cv2.imwrite expects BGR, [0, 0, 255] is Red, [255, 0, 0] is Blue
     pos = ps > 0
     neg = ps == 0
     
+    # Red for negative (BGR: [0, 0, 255]), Blue for positive (BGR: [255, 0, 0])
+    # Background is black (0, 0, 0)
     img[ys[pos], xs[pos]] = [255, 0, 0]
     img[ys[neg], xs[neg]] = [0, 0, 255]
     
