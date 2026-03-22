@@ -104,8 +104,19 @@ def run(args):
         
         # Decode image
         img_i = img_data[i]
-        img_np = cv2.imdecode(img_i, cv2.IMREAD_COLOR)
         
+        # In M3ED, /ovc/left/data can be either raw byte array (JPEG encoded) or raw uint8 image matrix.
+        # We explicitly handle the exact data type found.
+        # The error indicates `buf.checkVector(1, CV_8U) > 0` failed, which means the array is NOT a 1D byte array.
+        # It is already a 2D (grayscale) or 3D (color) image array.
+        img_np = np.array(img_i)
+        if img_np.ndim == 2:
+            # Grayscale to BGR
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        elif img_np.ndim == 3 and img_np.shape[2] == 1:
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        # Note: We do not call cv2.imdecode here anymore because the data is already decoded!
+            
         H, W = img_np.shape[:2]
         cv2.imwrite(osp.join(args.dst, f"{frame_id}.png"), img_np)
         

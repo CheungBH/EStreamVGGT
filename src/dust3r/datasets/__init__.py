@@ -35,6 +35,8 @@ from .waymo import Waymo_Multi  # noqa
 from .wildrgbd import WildRGBD_Multi  # noqa
 from .dsec import DSEC_Multi  # noqa
 from .m3ed import M3ED_Multi
+from .mvsec import MVSEC_Multi
+from .eventscape import EventScape_Multi
 
 
 from accelerate import Accelerator
