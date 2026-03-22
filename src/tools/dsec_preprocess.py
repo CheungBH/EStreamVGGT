@@ -5,60 +5,19 @@ import numpy as np
 import cv2
 import glob
 import h5py
-from PIL import Image
+import yaml
+import tqdm
+from pathlib import Path
+from rosbags.highlevel import AnyReader
+from scipy.spatial.transform import Rotation as R
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
-
-def read_intrinsics(path):
-    # Hard logic for DSEC calibration format
-    import yaml
-    with open(path, 'r') as f:
-        calib = yaml.safe_load(f)
-    K = np.array(calib['cam_to_cam']['cam0']['K']).reshape(3,3).astype(np.float32)
-    return K
-
-
-def read_extrinsics_per_frame(path, num_frames):
-    # Hard logic for DSEC poses format (which is a csv or txt file typically for poses)
-    # The extrinsics path here should point to the ground truth poses file or equivalent
-    arr = np.loadtxt(path, delimiter=',').astype(np.float32)
-    mats = []
-    for i in range(min(arr.shape[0], num_frames)):
-        flat = arr[i]
-        M = np.eye(4, dtype=np.float32)
-        # Assuming standard format [tx, ty, tz, qx, qy, qz, qw]
-        from scipy.spatial.transform import Rotation as R
-        M[:3, 3] = flat[:3]
-        M[:3, :3] = R.from_quat(flat[3:7]).as_matrix()
-        mats.append(M)
-    
-    # Pad if not enough poses
-    while len(mats) < num_frames:
-        mats.append(mats[-1] if mats else np.eye(4, dtype=np.float32))
-        
-    return mats
-
-
-def load_events(events_h5):
-    with h5py.File(events_h5, "r") as f:
-        x = f["events/x"][:]
-        y = f["events/y"][:]
-        t = f["events/t"][:] / 1e6  # converted to seconds
-        p = f["events/p"][:]
-    return x, y, t, p
-
-
-def aggregate_events(x, y, t, p, t0, t1, H, W):
-    mask = (t >= t0) & (t < t1)
-    xs = x[mask]
-    ys = y[mask]
-    ps = p[mask]
-
+def aggregate_events_xy_p(xs, ys, ps, H, W):
     img = np.zeros((H, W, 3), dtype=np.uint8)
     if xs.size == 0:
         return img
-
+        
     pos = ps > 0
     neg = ps == 0
     
@@ -67,91 +26,159 @@ def aggregate_events(x, y, t, p, t0, t1, H, W):
     
     return img
 
-
-def disparity_to_depth(disp, fx, baseline):
-    disp_f = disp.astype(np.float32)
-    depth = np.zeros_like(disp_f, dtype=np.float32)
-    valid = disp_f > 1e-6
-    depth[valid] = fx * baseline / disp_f[valid]
-    return depth
-
-
-def save_exr(path, depth):
-    cv2.imwrite(path, depth.astype(np.float32))
-
-
 def run(args):
+    # Initialize output directory
     seq_dst = osp.join(args.dst, args.name)
     os.makedirs(seq_dst, exist_ok=True)
-    imgs = sorted(glob.glob(osp.join(args.src, args.images_glob)))
-    if not imgs:
-        raise RuntimeError("no images found")
-    H0, W0 = np.array(Image.open(imgs[0])).shape[:2]
     
-    # Read calibration from official DSEC format (cam_to_cam.yaml)
-    calib_path = osp.join(args.src, "calibration", "cam_to_cam.yaml")
-    if not osp.exists(calib_path):
-        raise RuntimeError(f"Calibration file not found at {calib_path}")
-    K = read_intrinsics(calib_path)
+    DATA_ROOT = Path(args.src)
+    SEQ_NAME = args.name
+    USE_EVENT_VIEW = args.use_event_view
     
-    # DSEC Ground Truth poses:
-    # Actually, DSEC does not officially provide 'poses.txt' in the base dataset.
-    # Poses (trajectory) are often provided in a separate file (e.g. trajectory.csv) 
-    # or sometimes not at all for test sequences. 
-    # Let's fallback to identity if a pose file isn't explicitly provided or found.
-    # We will use the provided --pose_file arg or fallback to identity.
-    pose_file = getattr(args, 'pose_file', None)
-    if pose_file and osp.exists(pose_file):
-        mats = read_extrinsics_per_frame(pose_file, len(imgs))
+    DISP_FOLDER = "disparity/event" if USE_EVENT_VIEW else "disparity/image"
+    
+    # Set up paths based on Grok's working structure
+    img_dir = DATA_ROOT / "RGB_event/train" / SEQ_NAME / "images/left/distorted"
+    event_h5 = DATA_ROOT / "RGB_event/train" / SEQ_NAME / "events/left/events.h5"
+    disp_dir = DATA_ROOT / "train_disparity" / SEQ_NAME / DISP_FOLDER
+    calib_file = DATA_ROOT / "train_calibration" / SEQ_NAME / "calibration/cam_to_cam.yaml"
+    
+    base_seq = SEQ_NAME.rsplit('_', 1)[0] if '_' in SEQ_NAME[-2:] else SEQ_NAME
+    bag_dir = DATA_ROOT / "lidar_imu" / "data" / base_seq
+    bag_file = list(bag_dir.glob("*.bag"))[0] if bag_dir.exists() and len(list(bag_dir.glob("*.bag"))) > 0 else None
+
+    # Load intrinsics (K) and Disparity-to-Depth mapping (Q)
+    with open(calib_file, 'r') as f:
+        calib = yaml.safe_load(f)
+        
+    K = np.array(calib['cam_to_cam']['cam0']['K']).reshape(3,3).astype(np.float32)
+    
+    q_key = "cams_03" if USE_EVENT_VIEW else "cams_12"
+    Q = np.array(calib['disparity_to_depth'][q_key], dtype=np.float32)
+    
+    # Load RGB frame paths
+    rgb_files = sorted(img_dir.glob("*.png"))
+    if not rgb_files:
+        raise RuntimeError(f"No RGB images found in {img_dir}")
+        
+    frame_ids = [f.stem for f in rgb_files]
+    print(f"Found {len(frame_ids)} frames")
+    
+    # Get image dimensions from first image
+    sample_rgb = cv2.imread(str(rgb_files[0]))
+    H, W = sample_rgb.shape[:2]
+    
+    # Load events into memory
+    print("Loading events from H5...")
+    with h5py.File(event_h5, 'r') as f:
+        events = {
+            't': f['events']['t'][:],
+            'x': f['events']['x'][:],
+            'y': f['events']['y'][:],
+            'p': f['events']['p'][:],
+        }
+
+    # ROS bag setup for Poses
+    pose_topic = '/lio_sam/mapping/odometry'
+    bag_reader = None
+    connections_pose = []
+    
+    if bag_file:
+        bag_reader = AnyReader([bag_file])
+        bag_reader.__enter__()
+        connections_pose = [c for c in bag_reader.connections if c.topic == pose_topic]
+        if not connections_pose:
+            print(f"Warning: Topic {pose_topic} not found in bag. Poses will be identity.")
+            bag_reader.__exit__(None, None, None)
+            bag_reader = None
     else:
-        print(f"Warning: No valid pose file provided/found. Using identity matrices for cam2world.")
-        mats = [np.eye(4, dtype=np.float32) for _ in range(len(imgs))]
-    
-    x, y, te, p = load_events(osp.join(args.src, args.events_h5))
-    ts = np.loadtxt(osp.join(args.src, args.timestamps_txt)).astype(np.float64) / 1e6 # assuming timestamps are in microseconds
+        print("Warning: No ROS bag found. Poses will be identity.")
 
-    disp_paths = sorted(glob.glob(osp.join(args.src, args.disparity_glob)))
-    
-    # Pre-calculate disparities mapping
-    # Assuming disparity images map 1-to-1 with the rgb images
-    disp_files = []
-    if args.disparity_glob:
-        disp_files = sorted(glob.glob(osp.join(args.src, args.disparity_glob)))
-    
-    for i, impath in enumerate(imgs):
-        rgb = cv2.cvtColor(cv2.imread(impath, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
-        frame_id = osp.splitext(osp.basename(impath))[0]
-        rgb_out = osp.join(seq_dst, frame_id + ".png")
-        cv2.imwrite(rgb_out, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-        
-        t1 = ts[i]
-        t0 = t1 - args.event_window_ms / 1000.0
-        ev = aggregate_events(x, y, te, p, t0, t1, H0, W0)
-        ev_out = osp.join(seq_dst, frame_id + "_event.png")
-        cv2.imwrite(ev_out, cv2.cvtColor(ev, cv2.COLOR_RGB2BGR))
-        
-        disp = cv2.imread(disp_files[i], cv2.IMREAD_ANYDEPTH)
-        depth = disparity_to_depth(disp, K[0, 0], args.baseline)
-        save_exr(osp.join(seq_dst, frame_id + ".exr"), depth)
-        
-        np.savez(osp.join(seq_dst, frame_id + ".npz"), intrinsics=K.astype(np.float32), cam2world=mats[i].astype(np.float32))
+    # Main processing loop
+    t_prev_us = events['t'][0] if len(events['t']) > 0 else 0
+    event_window_us = int(args.event_window_ms * 1000)
 
+    for idx, fid in enumerate(tqdm.tqdm(frame_ids)):
+        # 1. RGB
+        rgb_path = img_dir / f"{fid}.png"
+        rgb = cv2.imread(str(rgb_path))
+        if rgb is None: continue
+        # Write to EStreamVGGT format
+        cv2.imwrite(osp.join(seq_dst, f"{fid}.png"), rgb)
+
+        # 2. Depth
+        disp_path = disp_dir / f"{fid}.png"
+        if disp_path.exists():
+            disp_u16 = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
+            disp_f = disp_u16.astype(np.float32) / 256.0
+            valid = disp_u16 > 0
+            points_3d = cv2.reprojectImageTo3D(disp_f, Q)
+            depth = points_3d[..., 2]
+            depth[~valid] = 0
+            depth = np.clip(depth, 0.1, 80.0)
+            cv2.imwrite(osp.join(seq_dst, f"{fid}.exr"), depth.astype(np.float32))
+        else:
+            # Save zero depth if not available
+            cv2.imwrite(osp.join(seq_dst, f"{fid}.exr"), np.zeros((H, W), dtype=np.float32))
+
+        # 3. Events
+        t_curr_us = t_prev_us + event_window_us
+        mask = (events['t'] >= t_prev_us) & (events['t'] < t_curr_us)
+        ev_img = aggregate_events_xy_p(events['x'][mask], events['y'][mask], events['p'][mask], H, W)
+        cv2.imwrite(osp.join(seq_dst, f"{fid}_event.png"), ev_img)
+        t_prev_us = t_curr_us
+
+        # 4. Pose
+        pose = np.eye(4, dtype=np.float32)
+        if bag_reader and connections_pose:
+            min_dt = float('inf')
+            closest_msg = None
+
+            for connection, timestamp_ns, rawdata in bag_reader.messages(connections=connections_pose):
+                msg = bag_reader.deserialize(rawdata, connection.msgtype)
+                t_msg_us = timestamp_ns // 1000
+                dt = abs(t_msg_us - t_curr_us)
+                if dt < min_dt:
+                    min_dt = dt
+                    closest_msg = msg
+                if min_dt < 5000:  # within 5ms
+                    break
+
+            if closest_msg and min_dt < 5000:
+                try:
+                    p = closest_msg.pose.pose.position
+                    q = closest_msg.pose.pose.orientation
+                except AttributeError:
+                    try:
+                        p = closest_msg.pose.position
+                        q = closest_msg.pose.orientation
+                    except AttributeError:
+                        p = None
+
+                if p is not None:
+                    pose[0:3, 3] = [p.x, p.y, p.z]
+                    rot = R.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+                    pose[0:3, 0:3] = rot
+
+        # Save Intrinsics and Pose
+        np.savez(osp.join(seq_dst, f"{fid}.npz"), 
+                 intrinsics=K, 
+                 cam2world=pose)
+
+    if bag_reader:
+        bag_reader.__exit__(None, None, None)
+        
+    print(f"DSEC EStreamVGGT Preprocessing completed at: {seq_dst}")
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", type=str, required=True, help="Path to sequence root (e.g. /path/to/zurich_city_04_a)")
+    ap.add_argument("--src", type=str, required=True, help="DSEC Root Directory (e.g. /home/bhzhang/Documents/datasets/DSEC)")
     ap.add_argument("--dst", type=str, required=True, help="Output root directory")
-    ap.add_argument("--name", type=str, required=True, help="Output sequence name")
-    ap.add_argument("--images_glob", type=str, default="images/left/rectified/*.png")
-    ap.add_argument("--events_h5", type=str, default="events/left/events.h5")
-    ap.add_argument("--timestamps_txt", type=str, default="images/left/exposure_timestamps.txt")
-    ap.add_argument("--disparity_glob", type=str, default="disparity/train/left/rectified/*.png")
-    ap.add_argument("--baseline", type=float, default=0.1) # DSEC stereo baseline is roughly 10cm
-    ap.add_argument("--pose_file", type=str, default="", help="Optional path to pose file if available")
-    ap.add_argument("--event_window_ms", type=float, default=30.0)
+    ap.add_argument("--name", type=str, required=True, help="Sequence name (e.g. zurich_city_09_a)")
+    ap.add_argument("--event_window_ms", type=float, default=50.0, help="Event accumulation window in ms")
+    ap.add_argument("--use_event_view", action="store_true", help="Use event view disparity mapping (cams_03)")
     args = ap.parse_args()
     run(args)
-
 
 if __name__ == "__main__":
     main()
