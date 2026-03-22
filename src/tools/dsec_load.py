@@ -1,155 +1,304 @@
-import cv2
+import os
+import os.path as osp
+import argparse
 import numpy as np
+import cv2
+import hdf5plugin
 import h5py
 import yaml
-from pathlib import Path
-import hdf5plugin
 import tqdm
-from rosbags.highlevel import AnyReader  # 这个是关键！高层次读取器
-from scipy.spatial.transform import Rotation as R  # 用于 quaternion → matrix
+from pathlib import Path
+from rosbags.highlevel import AnyReader
+from scipy.spatial.transform import Rotation as R
 
-# ==================== 配置 ====================
-DATA_ROOT = Path("/home/bhzhang/Documents/datasets/DSEC")          # 你的 DSEC 根目录
-SEQ_NAME = "zurich_city_09_a"                   # 你的序列名
-OUTPUT_DIR = Path(f"output_{SEQ_NAME}")
-OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
-
-USE_EVENT_VIEW = False
-DISP_FOLDER = "disparity/event" if USE_EVENT_VIEW else "disparity/image"
-
-# 路径（根据你的解压结构调整）
-img_dir = DATA_ROOT / "RGB_event/train" / SEQ_NAME / "images/left/distorted"
-event_h5 = DATA_ROOT / "RGB_event/train" / SEQ_NAME / "events/left/events.h5"
-disp_dir = DATA_ROOT / "train_disparity" / SEQ_NAME / DISP_FOLDER
-calib_file = DATA_ROOT / "train_calibration" / SEQ_NAME / "calibration/cam_to_cam.yaml"
-
-base_seq = SEQ_NAME.rsplit('_', 1)[0] if '_' in SEQ_NAME[-2:] else SEQ_NAME
-bag_dir = DATA_ROOT / "lidar_imu" / "data" / base_seq
-bag_file = list(bag_dir.glob("*.bag"))[0] if bag_dir.exists() else None
-
-# 加载 Q
-with open(calib_file, 'r') as f:
-    calib = yaml.safe_load(f)
-q_key = "cams_03" if USE_EVENT_VIEW else "cams_12"
-Q = np.array(calib['disparity_to_depth'][q_key], dtype=np.float32)
-
-# RGB 文件列表
-rgb_files = sorted(img_dir.glob("*.png"))
-frame_ids = [f.stem for f in rgb_files]
-print(f"Found {len(frame_ids)} frames")
-
-# 事件加载（一次性或分块，根据内存）
-with h5py.File(event_h5, 'r') as f:
-    events = {
-        't': f['events']['t'][:],
-        'x': f['events']['x'][:],
-        'y': f['events']['y'][:],
-        'p': f['events']['p'][:],
-    }
-    # t_offset = f.get('t_offset', [0])[0]
-    # events['t'] += t_offset
-
-# 事件累积函数（示例：固定 50ms 窗口，实际应从 timestamps.txt 取 t）
-def accumulate_events(t_start_us, t_end_us, shape=(480, 640)):
-    mask = (events['t'] >= t_start_us) & (events['t'] < t_end_us)
-    if not np.any(mask):
-        return np.zeros((*shape, 3), np.uint8)
-    x, y, p = events['x'][mask], events['y'][mask], events['p'][mask]
-    pos = np.zeros(shape, np.uint8)
-    neg = np.zeros(shape, np.uint8)
-    pos[y[p==1], x[p==1]] = 255
-    neg[y[p==0], x[p==0]] = 255
-    return np.stack([pos, neg, np.zeros_like(pos)], -1)
+os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
 
-# ==================== ROS bag 处理 ====================
-pose_topic = '/lio_sam/mapping/odometry'  # 先用命令 rosbags-info your.bag 确认实际 topic 名！！！
-# 常见 DSEC pose topic：/lio_pose, /odometry, /gps/odometry, /pose 等
+def aggregate_events_xy_p(xs, ys, ps, H, W):
+    img = np.zeros((H, W, 3), dtype=np.uint8)
+    if xs.size == 0:
+        return img
 
-bag_reader = None
-connections_pose = []  # 提前过滤 connection
+    pos = ps > 0
+    neg = ps == 0
 
-if bag_file:
-    bag_reader = AnyReader([bag_file])
-    bag_reader.__enter__()
+    img[ys[pos], xs[pos]] = [255, 0, 0]     # Blue for positive
+    img[ys[neg], xs[neg]] = [0, 0, 255]     # Red for negative
 
-    # 关键：过滤出对应 topic 的 Connection 对象
-    connections_pose = [c for c in bag_reader.connections if c.topic == pose_topic]
+    return img
 
-    if not connections_pose:
-        print(f"警告：未找到 topic {pose_topic}，pose 将为 identity")
+
+class SimpleIMUIntegrator:
+    """简单 IMU 积分（仅短期可用，长时漂移严重）"""
+
+    def __init__(self, g=9.81):
+        self.q = np.array([1.0, 0, 0, 0])  # w x y z
+        self.v = np.zeros(3)
+        self.p = np.zeros(3)
+        self.g = np.array([0, 0, -g])
+        self.last_t_sec = None
+
+    def update(self, t_sec, acc, gyro):
+        if self.last_t_sec is None:
+            self.last_t_sec = t_sec
+            return np.eye(4)
+
+        dt = t_sec - self.last_t_sec
+        if dt <= 0:
+            return self.get_pose()
+
+        # 1. 姿态更新（简单积分）
+        angle = gyro * dt
+        if np.linalg.norm(angle) > 1e-8:
+            delta_rot = R.from_rotvec(angle)
+            current_rot = R.from_quat(self.q[[1, 2, 3, 0]])  # xyzw
+            new_rot = current_rot * delta_rot
+            self.q = new_rot.as_quat()[[3, 0, 1, 2]]  # wxyz
+
+        # 2. 加速度转世界系
+        R_mat = R.from_quat(self.q[[1, 2, 3, 0]]).as_matrix()
+        acc_world = R_mat @ acc
+
+        # 3. 减重力
+        acc_linear = acc_world + self.g
+
+        # 4. 速度 & 位置
+        v_old = self.v.copy()
+        self.v += acc_linear * dt
+        self.p += (v_old + self.v) / 2 * dt
+
+        self.last_t_sec = t_sec
+        return self.get_pose()
+
+    def get_pose(self):
+        R_mat = R.from_quat(self.q[[1, 2, 3, 0]]).as_matrix()
+        T = np.eye(4)
+        T[:3, :3] = R_mat
+        T[:3, 3] = self.p
+        return T.astype(np.float32)
+
+
+def process_subsequence(args, base_name, sub_name):
+    """处理单个子序列，如 interlaken_00_a"""
+    seq_name = f"{base_name}_{sub_name}" if sub_name else base_name
+    print(f"\n处理子序列: {seq_name}")
+
+    seq_dst = osp.join(args.dst, seq_name)
+    os.makedirs(seq_dst, exist_ok=True)
+
+    DATA_ROOT = Path(args.src)
+
+    # 路径（根据你的结构调整）
+    img_dir = DATA_ROOT / "RGB_event/train" / seq_name / "images/left/distorted"
+    event_h5 = DATA_ROOT / "RGB_event/train" / seq_name / "events/left/events.h5"
+    disp_dir = DATA_ROOT / "train_disparity" / seq_name / (
+        "disparity/event" if args.use_event_view else "disparity/image")
+    calib_file = DATA_ROOT / "train_calibration" / seq_name / "calibration/cam_to_cam.yaml"
+
+    # bag 是基序列的
+    bag_dir = DATA_ROOT / "lidar_imu" / "data" / base_name
+    bag_file = list(bag_dir.glob("*.bag"))[0] if bag_dir.exists() else None
+
+    # 加载 calibration
+    if not calib_file.exists():
+        print(f"警告：calib 文件不存在 {calib_file}，使用单位内参")
+        K = np.eye(3, dtype=np.float32)
+        Q = np.zeros((4, 4), dtype=np.float32)
+    else:
+        with open(calib_file, 'r') as f:
+            calib = yaml.safe_load(f)
+
+        # 内参 K
+        if args.use_event_view:
+            cam_key = 'camRect0' if 'camRect0' in calib['intrinsics'] else 'cam0'
+        else:
+            cam_key = 'camRect1' if 'camRect1' in calib['intrinsics'] else 'cam1'
+
+        if cam_key in calib['intrinsics']:
+            K_list = calib['intrinsics'][cam_key]['camera_matrix']
+            print(f"使用相机内参: {cam_key}, 值: {K_list}")
+
+            if len(K_list) == 4:
+                fx, fy, cx, cy = K_list
+                K = np.array([
+                    [fx, 0.0, cx],
+                    [0.0, fy, cy],
+                    [0.0, 0.0, 1.0]
+                ], dtype=np.float32)
+            elif len(K_list) == 9:
+                K = np.array(K_list).reshape(3, 3).astype(np.float32)
+            else:
+                raise ValueError(f"不支持的 camera_matrix 长度: {len(K_list)}，内容: {K_list}")
+        else:
+            print(f"警告：未找到 {cam_key} 内参，使用单位矩阵")
+            K = np.eye(3, dtype=np.float32)
+
+        # Q
+        q_key = "cams_03" if args.use_event_view else "cams_12"
+        if 'disparity_to_depth' in calib and q_key in calib['disparity_to_depth']:
+            Q = np.array(calib['disparity_to_depth'][q_key], dtype=np.float32)
+        else:
+            print(f"警告：未找到 {q_key}，depth 将不可用")
+            Q = np.zeros((4, 4), dtype=np.float32)
+
+    # RGB 文件列表
+    rgb_files = sorted(img_dir.glob("*.png"))
+    if not rgb_files:
+        print(f"无 RGB 图像: {img_dir}，跳过")
+        return
+
+    frame_ids = [f.stem for f in rgb_files]
+    print(f"找到 {len(frame_ids)} 帧")
+
+    # 取第一张图确定分辨率
+    sample_rgb = cv2.imread(str(rgb_files[0]))
+    if sample_rgb is None:
+        print("无法读取 RGB 示例图，跳过")
+        return
+    H, W = sample_rgb.shape[:2]
+
+    # 加载 events
+    if not event_h5.exists():
+        print(f"无 event 文件: {event_h5}，event 将为空")
+        events = {'t': np.array([]), 'x': np.array([]), 'y': np.array([]), 'p': np.array([])}
+    else:
+        with h5py.File(event_h5, 'r') as f:
+            events = {
+                't': f['events']['t'][:],
+                'x': f['events']['x'][:],
+                'y': f['events']['y'][:],
+                'p': f['events']['p'][:],
+            }
+
+    # IMU 积分器
+    imu_integrator = SimpleIMUIntegrator()
+
+    # bag 中读取 IMU
+    bag_reader = None
+    connections_imu = []
+    if bag_file:
+        try:
+            bag_reader = AnyReader([bag_file])
+            bag_reader.__enter__()
+            connections_imu = [c for c in bag_reader.connections if c.topic == '/imu/data']
+            if connections_imu:
+                print("找到 IMU topic /imu/data，将进行积分")
+            else:
+                print("未找到 IMU topic /imu/data，pose 将为 identity")
+        except Exception as e:
+            print(f"打开 bag 失败: {e}，pose 将为 identity")
+            bag_reader = None
+
+    # 主循环
+    t_prev_us = events['t'][0] if len(events['t']) > 0 else 0
+    event_window_us = int(args.event_window_ms * 1000)
+
+    for idx, fid in enumerate(tqdm.tqdm(frame_ids, desc=seq_name)):
+        # 1. RGB
+        rgb_path = img_dir / f"{fid}.png"
+        rgb = cv2.imread(str(rgb_path))
+        if rgb is None:
+            continue
+        cv2.imwrite(osp.join(seq_dst, f"{fid}.png"), rgb)
+
+        # 2. Depth
+        disp_path = disp_dir / f"{fid}.png"
+        if disp_path.exists():
+            disp_u16 = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
+            disp_f = disp_u16.astype(np.float32) / 256.0
+            valid = disp_u16 > 0
+            points_3d = cv2.reprojectImageTo3D(disp_f, Q)
+            depth = points_3d[..., 2]
+            depth[~valid] = 0
+            depth = np.clip(depth, 0.1, 80.0)
+            cv2.imwrite(osp.join(seq_dst, f"{fid}.exr"), depth.astype(np.float32))
+        else:
+            cv2.imwrite(osp.join(seq_dst, f"{fid}.exr"), np.zeros((H, W), dtype=np.float32))
+
+        # 3. Event
+        t_curr_us = t_prev_us + event_window_us
+        mask = (events['t'] >= t_prev_us) & (events['t'] < t_curr_us)
+        ev_img = aggregate_events_xy_p(events['x'][mask], events['y'][mask], events['p'][mask], H, W)
+        cv2.imwrite(osp.join(seq_dst, f"{fid}_event.png"), ev_img)
+        t_prev_us = t_curr_us
+
+        # 4. Pose（IMU 积分） - 关键修复：使用 int64 避免溢出
+        pose = imu_integrator.get_pose()
+
+        if bag_reader and connections_imu:
+            min_dt = float('inf')
+            closest_msg = None
+
+            t_curr_us_int64 = np.int64(t_curr_us)
+
+            for conn, timestamp_ns, raw in bag_reader.messages(connections=connections_imu):
+                t_msg_ns_int64 = np.int64(timestamp_ns)
+                t_msg_us_int64 = t_msg_ns_int64 // np.int64(1000)
+
+                dt_int64 = abs(t_msg_us_int64 - t_curr_us_int64)
+                dt = float(dt_int64)
+
+                if dt < min_dt:
+                    min_dt = dt
+                    closest_msg = bag_reader.deserialize(raw, conn.msgtype)
+
+                if dt < 5000:
+                    break
+
+            if closest_msg and min_dt < 5000:
+                acc = np.array([closest_msg.linear_acceleration.x,
+                                closest_msg.linear_acceleration.y,
+                                closest_msg.linear_acceleration.z], dtype=np.float64)
+                gyro = np.array([closest_msg.angular_velocity.x,
+                                 closest_msg.angular_velocity.y,
+                                 closest_msg.angular_velocity.z], dtype=np.float64)
+                t_sec = float(t_curr_us) / 1e6
+                pose = imu_integrator.update(t_sec, acc, gyro)
+
+        # 保存
+        np.savez(osp.join(seq_dst, f"{fid}.npz"),
+                 intrinsics=K,
+                 cam2world=pose)
+
+    if bag_reader:
         bag_reader.__exit__(None, None, None)
-        bag_reader = None
 
-# 主循环
-t_prev_us = events['t'][0] if len(events['t']) > 0 else 0
+    print(f"子序列 {seq_name} 处理完成 → {seq_dst}")
 
-for idx, fid in enumerate(tqdm.tqdm(frame_ids)):
-    # RGB
-    rgb_path = img_dir / f"{fid}.png"
-    rgb = cv2.imread(str(rgb_path))
-    if rgb is None: continue
-    rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
 
-    # Depth
-    disp_path = disp_dir / f"{fid}.png"
-    if not disp_path.exists(): continue
-    disp_u16 = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
-    disp_f = disp_u16.astype(np.float32) / 256.0
-    valid = disp_u16 > 0
-    points_3d = cv2.reprojectImageTo3D(disp_f, Q)
-    depth = points_3d[..., 2]
-    depth[~valid] = 0
-    depth = np.clip(depth, 0.1, 80.0)
+def run(args):
+    DATA_ROOT = Path(args.src)
+    base_name = args.name
 
-    # Event frame (50ms 示例)
-    t_curr_us = t_prev_us + 50000
-    event_frame = accumulate_events(t_prev_us, t_curr_us)
-    t_prev_us = t_curr_us
+    # 自动发现子序列
+    train_img_root = DATA_ROOT / "RGB_event/train"
+    sub_dirs = sorted([d for d in train_img_root.iterdir()
+                       if d.is_dir() and d.name.startswith(base_name + "_")])
 
-    # Pose
-    pose = np.eye(4, dtype=np.float32)
-    if bag_reader and connections_pose:
-        min_dt = float('inf')
-        closest_msg = None
+    if not sub_dirs:
+        print(f"未找到子序列，尝试直接处理 {base_name}")
+        process_subsequence(args, base_name, "")
+        return
 
-        for connection, timestamp_ns, rawdata in bag_reader.messages(connections=connections_pose):
-            msg = bag_reader.deserialize(rawdata, connection.msgtype)
-            t_msg_us = timestamp_ns // 1000  # ns → us
-            dt = abs(t_msg_us - t_curr_us)
-            if dt < min_dt:
-                min_dt = dt
-                closest_msg = msg
-            if min_dt < 5000:  # 5ms 内
-                break
+    print(f"发现 {len(sub_dirs)} 个子序列：")
+    for d in sub_dirs:
+        print("  -", d.name)
 
-        if closest_msg and min_dt < 5000:
-            # 假设是 nav_msgs.msg.Odometry
-            try:
-                p = closest_msg.pose.pose.position
-                q = closest_msg.pose.pose.orientation
-            except AttributeError:
-                # 备选：geometry_msgs.msg.PoseStamped
-                try:
-                    p = closest_msg.pose.position
-                    q = closest_msg.pose.orientation
-                except AttributeError:
-                    print(f"Pose msg 格式未知，跳过: {type(closest_msg)}")
-                    continue
+    for sub_dir in sub_dirs:
+        sub_name = sub_dir.name.replace(base_name + "_", "")
+        process_subsequence(args, base_name, sub_name)
 
-            pose[0:3, 3] = [p.x, p.y, p.z]
-            rot = R.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
-            pose[0:3, 0:3] = rot
 
-    # 保存
-    out_h5 = OUTPUT_DIR / f"frame_{fid}.h5"
-    with h5py.File(out_h5, 'w') as hf:
-        hf.create_dataset('rgb', data=rgb, compression="gzip")
-        hf.create_dataset('event_frame', data=event_frame, compression="gzip")
-        hf.create_dataset('depth', data=depth, compression="gzip")
-        hf.create_dataset('pose', data=pose)
+def main():
+    parser = argparse.ArgumentParser(description="DSEC 数据预处理为 EStreamVGGT 格式（支持多子序列）")
+    parser.add_argument("--src", type=str, required=True, help="DSEC 根目录")
+    parser.add_argument("--dst", type=str, required=True, help="输出根目录")
+    parser.add_argument("--name", type=str, required=True, help="基序列名，例如 interlaken_00 或 zurich_city_09")
+    parser.add_argument("--event_window_ms", type=float, default=50.0, help="事件累积窗口 ms")
+    parser.add_argument("--use_event_view", action="store_true", help="使用 event 视图的 disparity (cams_03)")
+    args = parser.parse_args()
+    run(args)
 
-if bag_reader:
-    bag_reader.__exit__(None, None, None)
 
-print(f"完成！输出文件夹：{OUTPUT_DIR}")
+if __name__ == "__main__":
+    main()

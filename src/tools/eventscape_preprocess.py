@@ -31,7 +31,7 @@ def run(args):
     
     for seq_path in seq_dirs:
         seq_name = osp.basename(seq_path)
-        seq_dst = osp.join(args.dst, seq_name)
+        seq_dst = osp.join(args.dst, args.src.split("/")[-1] + "-" + seq_name)
         os.makedirs(seq_dst, exist_ok=True)
         print(f"Processing sequence: {seq_name}")
         
