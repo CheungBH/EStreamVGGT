@@ -8,7 +8,6 @@ import argparse
 import scipy.ndimage as ndimage
 
 def aggregate_events_xy_p(xs, ys, ps, H, W):
-    """蓝正红负 3通道 event 图"""
     img = np.zeros((H, W, 3), dtype=np.uint8)
     if xs.size == 0:
         return img
@@ -19,7 +18,6 @@ def aggregate_events_xy_p(xs, ys, ps, H, W):
     return img
 
 def load_pose_gt(path):
-    """加载 pose_gt.h5 → {ts: 4x4 pose}"""
     poses = {}
     with h5py.File(path, 'r') as f:
         ts = f['ts'][:].astype(np.float64)
@@ -37,7 +35,6 @@ def get_closest_key(dic, target):
     return min(dic.keys(), key=lambda k: abs(k - target))
 
 def project_depth_to_rgb(depth_event, K_event, T_event_to_rgb, rgb_H, rgb_W):
-    """Depth 从 event 投影到 RGB 相机"""
     H_e, W_e = depth_event.shape
     y_e, x_e = np.mgrid[0:H_e, 0:W_e]
     pts = np.stack([x_e.ravel(), y_e.ravel(), np.ones_like(x_e.ravel())], axis=1)
@@ -47,18 +44,20 @@ def project_depth_to_rgb(depth_event, K_event, T_event_to_rgb, rgb_H, rgb_W):
                       [0, K_event[1], K_event[3]],
                       [0, 0, 1]], dtype=np.float32)
     pts2d = (K_rgb @ pts3d_rgb.T).T
-    pts2d = pts2d[:, :2] / (pts2d[:, 2:3] + 1e-8)  # 防除0
+    pts2d = pts2d[:, :2] / (pts2d[:, 2:3] + 1e-8)
     depth_rgb = np.zeros((rgb_H, rgb_W), dtype=np.float32)
     valid = (pts2d[:,0] >= 0) & (pts2d[:,0] < rgb_W) & (pts2d[:,1] >= 0) & (pts2d[:,1] < rgb_H)
-    x_valid = pts2d[valid, 0].astype(int)
-    y_valid = pts2d[valid, 1].astype(int)
-    depth_rgb[y_valid, x_valid] = pts3d_rgb[valid, 2]
+    if np.any(valid):
+        x_valid = pts2d[valid, 0].astype(int)
+        y_valid = pts2d[valid, 1].astype(int)
+        depth_rgb[y_valid, x_valid] = pts3d_rgb[valid, 2]
     depth_rgb = ndimage.gaussian_filter(depth_rgb, sigma=1)
     return np.clip(depth_rgb, 0, None)
 
+
 def preprocess_m3ed(seq_name: str,
-                    data_root="/home/bhzhang/Documents/datasets/m3ed",
-                    out_root="/home/bhzhang/Documents/m3ed_vggt_ready/train"):
+                    data_root="/Users/cheungbh/Documents/datasets/m3ed",
+                    out_root="/Users/cheungbh/Documents/m3ed_vggt_ready/train"):
 
     seq_dir = Path(data_root) / seq_name
     h5_path    = seq_dir / f"{seq_name}_data.h5"
@@ -69,24 +68,23 @@ def preprocess_m3ed(seq_name: str,
     for sub in ["rgb", "event", "depth", "pose"]:
         (out_scene / sub).mkdir(parents=True, exist_ok=True)
 
-    # 加载主数据
+    # 加载主数据 ── 根据你的文件结构修正
     with h5py.File(h5_path, 'r') as f:
         rgb_data = f['/ovc/rgb/data'][:]
-        rgb_ts   = f['/ovc/rgb/ts'][:].astype(np.float64)
-
-        # 关键：官方 event 索引映射（累积索引）
-        ts_map_left = f['/ovc/rgb/ts_map_prophesee_left_t'][:].astype(int)
+        rgb_ts   = f['/ovc/ts'][:].astype(np.float64)                     # ← 修正：/ovc/ts
+        ts_map_left = f['/ovc/ts_map_prophesee_left_t'][:].astype(int)    # ← 修正：/ovc/ts_map_...
 
         events = {
             'x': f['/prophesee/left/x'][:],
             'y': f['/prophesee/left/y'][:],
-            't': f['/prophesee/left/t'][:].astype(np.float64) / 1e9,  # ns → s
+            't': f['/prophesee/left/t'][:].astype(np.float64) / 1e9,
             'p': f['/prophesee/left/p'][:]
         }
 
         calib_e = f['/prophesee/left/calib']
         resolution = calib_e['resolution'][:]
-        H_e, W_e = min(resolution), max(resolution)  # 保险处理顺序
+        H_e, W_e = int(resolution[1]), int(resolution[0])   # 通常 [H, W]，你的 event 是 720x1280
+        if H_e > W_e: H_e, W_e = W_e, H_e                   # 强制修正
         K_e = calib_e['intrinsics'][:]
 
         T_cam_to_e = f['/ovc/rgb/calib/T_to_prophesee_left'][:]
@@ -103,7 +101,7 @@ def preprocess_m3ed(seq_name: str,
 
     metadata = {"sequence": seq_name, "views": []}
 
-    print(f"🚀 处理 {seq_name} | RGB 帧数: {len(rgb_ts)} | 使用 ts_map_prophesee_left_t 严格对齐 event")
+    print(f"🚀 处理 {seq_name} | RGB 帧数: {len(rgb_ts)} | 使用 /ovc/ts_map_prophesee_left_t 严格对齐")
 
     total_events = len(events['x'])
     prev_end = 0
@@ -111,18 +109,15 @@ def preprocess_m3ed(seq_name: str,
     for i in tqdm(range(len(rgb_ts)), desc=seq_name):
         ts = rgb_ts[i]
 
-        # RGB 保存（转 RGB → 存 BGR）
         rgb = cv2.cvtColor(rgb_data[i], cv2.COLOR_BGR2RGB)
         cv2.imwrite(str(out_scene / "rgb" / f"rgb_{i:06d}.png"), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
 
-        # Event：使用 ts_map 索引（官方对齐）
+        # Event：使用官方 ts_map 索引
         start_idx = prev_end
-        end_idx   = ts_map_left[i]
-
-        # 边界检查
+        end_idx = ts_map_left[i]
         end_idx = min(end_idx, total_events)
+
         if end_idx <= start_idx:
-            # 极少见：无新事件 → 空图
             event_img = np.zeros((H_e, W_e, 3), dtype=np.uint8)
         else:
             xs = events['x'][start_idx:end_idx]
@@ -132,16 +127,15 @@ def preprocess_m3ed(seq_name: str,
 
         cv2.imwrite(str(out_scene / "event" / f"event_{i:06d}.png"), event_img)
 
-        # 更新 prev_end
         prev_end = end_idx
 
-        # Depth（投影）
+        # Depth
         idx_d = np.argmin(np.abs(depth_ts - ts))
         depth_e = depth_maps[idx_d].astype(np.float32)
         depth_rgb = project_depth_to_rgb(depth_e, K_e, T_e_to_rgb, H_rgb, W_rgb)
         cv2.imwrite(str(out_scene / "depth" / f"depth_{i:06d}.png"), (depth_rgb * 1000).astype(np.uint16))
 
-        # Pose（最近）
+        # Pose
         closest_ts = get_closest_key(poses_dict, ts)
         pose = poses_dict[closest_ts]
         np.savetxt(out_scene / "pose" / f"pose_{i:06d}.txt", pose)
@@ -155,12 +149,10 @@ def preprocess_m3ed(seq_name: str,
             "pose": f"pose_{i:06d}.txt"
         })
 
-        # 验证打印（每 1000 帧）
         if i % 1000 == 0 or i == len(rgb_ts)-1:
             events_this = end_idx - start_idx
-            print(f"  帧 {i:06d} | RGB ts={ts:.6f} | events={events_this} | 累计 event idx={end_idx}/{total_events}")
+            print(f"  帧 {i:06d} | ts={ts:.6f} | events={events_this} | idx={end_idx}/{total_events}")
 
-    # 保存 metadata + calib
     calib_info = {
         "K_event": K_e.tolist(),
         "T_e_to_rgb": T_e_to_rgb.tolist(),
@@ -170,13 +162,14 @@ def preprocess_m3ed(seq_name: str,
     with open(out_scene / "metadata.json", "w") as f:
         json.dump({"sequence": seq_name, "calib": calib_info, "views": metadata["views"]}, f, indent=2)
 
-    print(f"✅ {seq_name} 完成！输出帧数 = {len(rgb_ts)}（RGB/Event/Depth/Pose 严格对齐）")
+    print(f"✅ {seq_name} 完成！输出帧数 = {len(rgb_ts)}")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="M3ED → VGGT 四模态预处理（使用 ts_map 严格对齐）")
-    parser.add_argument("--seq", nargs="+", default=["falcon_forest_into_forest_1"])
-    parser.add_argument("--data_root", default="/home/bhzhang/Documents/datasets/m3ed")
-    parser.add_argument("--out_root", default="/home/bhzhang/Documents/m3ed_vggt_ready/train")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seq", nargs="+", default=["car_urban_day_city_hall"])
+    parser.add_argument("--data_root", default="/Users/cheungbh/Documents/PhDCode/EStreamVGGT/data")
+    parser.add_argument("--out_root", default="/Users/cheungbh/Documents/PhDCode/EStreamVGGT/data/processed")
     args = parser.parse_args()
 
     Path(args.out_root).mkdir(parents=True, exist_ok=True)
