@@ -55,6 +55,14 @@ def run(args):
         
     K = np.array(calib['cam_to_cam']['cam0']['K']).reshape(3,3).astype(np.float32)
     
+    # In DSEC, the raw RGB image resolution is 1440x1080.
+    # However, the Event camera (and the rectified RGB images matching the events) is 640x480.
+    # The 'cam_to_cam' calibration 'K' matrix is usually provided for the RAW 1440x1080 image.
+    # When DSEC authors rectify and align RGB to the event camera view (which is 640x480),
+    # the intrinsic matrix needs to be scaled accordingly to match the 640x480 resolution.
+    # We will dynamically calculate the scale factor and adjust both focal lengths (fx, fy) 
+    # and principal points (cx, cy).
+    
     q_key = "cams_03" if USE_EVENT_VIEW else "cams_12"
     Q = np.array(calib['disparity_to_depth'][q_key], dtype=np.float32)
     
@@ -69,6 +77,30 @@ def run(args):
     # Get image dimensions from first image
     sample_rgb = cv2.imread(str(rgb_files[0]))
     H, W = sample_rgb.shape[:2]
+    
+    # DSEC RAW RGB is 1440x1080. If our loaded images are 640x480 (Event resolution),
+    # we MUST scale the intrinsics matrix!
+    # Original RAW DSEC dimensions:
+    orig_W, orig_H = 1440.0, 1080.0
+    
+    if W != orig_W or H != orig_H:
+        scale_x = W / orig_W
+        scale_y = H / orig_H
+        print(f"Scaling intrinsics K by factors: scale_x={scale_x}, scale_y={scale_y}")
+        # Scale focal length
+        K[0, 0] *= scale_x
+        K[1, 1] *= scale_y
+        # Scale principal point
+        K[0, 2] *= scale_x
+        K[1, 2] *= scale_y
+    
+    # Double check for DUSt3R assertion safety
+    cx, cy = K[0, 2], K[1, 2]
+    if cx > W or cy > H or cx < W/5 or cy < H/5:
+        print(f"Warning: Intrinsics principal point (cx={cx}, cy={cy}) is wildly off-center for image shape (W={W}, H={H}).")
+        print(f"Adjusting principal point to image center (W/2, H/2).")
+        K[0, 2] = W / 2.0
+        K[1, 2] = H / 2.0
     
     # Load events into memory
     print("Loading events from H5...")

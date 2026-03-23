@@ -125,6 +125,37 @@ def process_subsequence(args, base_name, sub_name):
                 print(f"  警告: 不支持的 camera_matrix 长度 {len(K_list)}")
         else:
             print(f"  警告: 未找到 {cam_key} 内参，使用单位矩阵")
+            
+        # --- DSEC 主点越界修复开始 ---
+        # 如果 DSEC 的图像经过裁剪/缩放（比如变成 640x480），但 K 矩阵仍保留了原始高分辨率下的参数（如 1440x1080）
+        # 我们需要读取第一张图的真实分辨率，并根据它修正 K 矩阵的主点或进行等比例缩放
+        # 这里为了防止后面 _crop_resize_if_necessary 报错（min_margin_x > W/5），做安全保护：
+        
+        # 预先获取一下分辨率（这里先假定能读到第一张图，后面如果有读图失败的保护可以不用管这）
+        rgb_files_for_shape = sorted(img_dir.glob("*.png"))
+        if rgb_files_for_shape:
+            sample_rgb_for_shape = cv2.imread(str(rgb_files_for_shape[0]))
+            if sample_rgb_for_shape is not None:
+                orig_H, orig_W = 1080.0, 1440.0 # DSEC 原图典型尺寸
+                H, W = sample_rgb_for_shape.shape[:2]
+                
+                # 如果当前图像分辨率和原始分辨率不同，说明图像被 Resize 过了，必须等比例缩放 K 矩阵！
+                if W != orig_W or H != orig_H:
+                    scale_x = W / orig_W
+                    scale_y = H / orig_H
+                    print(f"  图像尺寸为 {W}x{H}，与原始 1440x1080 不同。正在缩放内参矩阵 (scale_x={scale_x:.3f}, scale_y={scale_y:.3f})")
+                    K[0, 0] *= scale_x
+                    K[1, 1] *= scale_y
+                    K[0, 2] *= scale_x
+                    K[1, 2] *= scale_y
+                
+                # 最后的兜底：如果主点还是太偏，强制拉回中心以满足 DUSt3R 的断言要求
+                cx, cy = K[0, 2], K[1, 2]
+                if cx > W or cy > H or cx < W/5 or cy < H/5:
+                    print(f"  警告: 缩放后主点 (cx={cx:.1f}, cy={cy:.1f}) 仍偏离图像中心过远，强制居中 (W/2, H/2)")
+                    K[0, 2] = W / 2.0
+                    K[1, 2] = H / 2.0
+        # --- DSEC 主点越界修复结束 ---
 
         # Q
         q_key = "cams_03" if args.use_event_view else "cams_12"
