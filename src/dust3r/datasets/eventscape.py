@@ -17,6 +17,7 @@ class EventScape_Multi(BaseMultiViewDataset):
         event_dir=None,
         event_suffix="_event",
         event_exts=(".png", ".jpg", ".jpeg"),
+        max_interval=1,
         **kwargs,
     ):
         self.ROOT = ROOT
@@ -27,6 +28,7 @@ class EventScape_Multi(BaseMultiViewDataset):
         self.event_dir = event_dir
         self.event_suffix = event_suffix
         self.event_exts = event_exts
+        self.max_interval = max_interval
         super().__init__(*args, **kwargs)
         assert self.split is None
         self._load_data()
@@ -102,7 +104,14 @@ class EventScape_Multi(BaseMultiViewDataset):
             fix_interval_prob=1.0,
             block_shuffle=None,
         )
-        image_idxs = np.array(all_image_ids)[pos]
+        
+        # FOR EVENT DATASETS: WE MUST FORCE STRICTLY CONTINUOUS FRAMES!
+        # If max_interval is 1, pos is guaranteed to be [0, 1, 2, ..., num_views-1]
+        # But we explicitly assert/force it here just to be absolutely safe for StreamVGGT
+        if self.max_interval == 1:
+            pos = list(range(num_views))
+            
+        image_idxs = np.array(all_image_ids)[start_id:start_id+num_views] if self.max_interval == 1 else np.array(all_image_ids)[pos]
         views = []
         ordered_video = True
 

@@ -4,5 +4,6 @@ checkpoints
 ckpt
 data
 .DS_Store
+RAM_Net
 .trae
 
