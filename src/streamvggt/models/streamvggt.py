@@ -34,7 +34,8 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         history_info: Optional[dict] = None,
         past_key_values=None,
         use_cache=False,
-        past_frame_idx=0
+        past_frame_idx=0,
+        flow: Optional[torch.Tensor] = None
     ):
         images = torch.stack(
             [view["img"] for view in views], dim=0
@@ -49,7 +50,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         if history_info is None:
             history_info = {"token": None}
 
-        aggregated_tokens_list, patch_start_idx = self.aggregator(images)
+        aggregated_tokens_list, patch_start_idx = self.aggregator(images, flow=flow)
         predictions = {}
 
         with torch.cuda.amp.autocast(enabled=False):

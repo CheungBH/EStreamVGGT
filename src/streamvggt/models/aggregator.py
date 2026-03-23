@@ -14,6 +14,7 @@ from streamvggt.layers import PatchEmbed
 from streamvggt.layers.block import Block
 from streamvggt.layers.rope import RotaryPositionEmbedding2D, PositionGetter
 from streamvggt.layers.vision_transformer import vit_small, vit_base, vit_large, vit_giant2
+from streamvggt.layers.motion_fusion import MotionCompensatedFusion
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,9 @@ class Aggregator(nn.Module):
 
         self.aa_block_num = self.depth // self.aa_block_size
 
+        # Flow-guided fusion module
+        self.motion_fusion = MotionCompensatedFusion(embed_dim=embed_dim)
+
         # Note: We have two camera tokens, one for the first frame and one for the rest
         # The same applies for register tokens
         self.camera_token = nn.Parameter(torch.randn(1, 2, 1, embed_dim))
@@ -190,7 +194,8 @@ class Aggregator(nn.Module):
         images: torch.Tensor,
         past_key_values=None,
         use_cache=False,
-        past_frame_idx=0
+        past_frame_idx=0,
+        flow: Optional[torch.Tensor] = None
     ) -> Tuple[List[torch.Tensor], int]:
         """
         Args:
@@ -282,8 +287,34 @@ class Aggregator(nn.Module):
                 else:
                     raise ValueError(f"Unknown attention type: {attn_type}")
             for i in range(len(frame_intermediates)):
+                # Optional: Apply motion fusion at specific blocks or before concatenation
+                f_inter = frame_intermediates[i]
+                g_inter = global_intermediates[i]
+                
+                # Apply motion fusion if flow is provided (typically doing this at the final layers is best,
+                # here we apply it to the frame features if flow is present, but only in non-cache mode for simplicity,
+                # or for all frames sequentially)
+                if flow is not None and f_inter.shape[1] > 1: # B, S, P, C
+                    # Simple sequential fusion for S > 1
+                    fused_inter = f_inter.clone()
+                    for s in range(1, f_inter.shape[1]):
+                        # Flow shape: (B, S-1, 2, H, W) where flow[:, s-1] is flow from s-1 to s
+                        if len(flow.shape) == 5:
+                            curr_flow = flow[:, s-1]
+                        else:
+                            curr_flow = flow # assume (B, 2, H, W)
+                        
+                        curr_tokens = f_inter[:, s, self.patch_start_idx:]
+                        prev_tokens = f_inter[:, s-1, self.patch_start_idx:]
+                        
+                        fused_patches = self.motion_fusion(
+                            curr_tokens, prev_tokens, curr_flow, H, W, self.patch_size
+                        )
+                        fused_inter[:, s, self.patch_start_idx:] = fused_patches
+                    f_inter = fused_inter
+                
                 # concat frame and global intermediates, [B x S x P x 2C]
-                concat_inter = torch.cat([frame_intermediates[i], global_intermediates[i]], dim=-1)
+                concat_inter = torch.cat([f_inter, g_inter], dim=-1)
                 output_list.append(concat_inter)
 
         del concat_inter
