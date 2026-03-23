@@ -145,8 +145,10 @@ class M3ED_Multi(BaseMultiViewDataset):
                 else:
                     image = self._read_event_image(scene_dir, impath)
 
-            depthmap = imread_cv2(osp.join(scene_dir, impath + ".exr"))
-            camera_params = np.load(osp.join(scene_dir, impath + ".npz"))
+            base_impath = impath.replace(self.event_suffix, "") if self.event_suffix else impath
+
+            depthmap = imread_cv2(osp.join(scene_dir, base_impath + ".exr"))
+            camera_params = np.load(osp.join(scene_dir, base_impath + ".npz"))
             intrinsics = np.float32(camera_params["intrinsics"])
             camera_pose = np.float32(camera_params["cam2world"])
 

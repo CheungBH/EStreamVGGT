@@ -155,13 +155,15 @@ class EventScape_Multi(BaseMultiViewDataset):
                 else:
                     image = self._read_event_image(scene_dir, impath)
 
-            depth_path = osp.join(scene_dir, impath + ".exr")
+            base_impath = impath.replace(self.event_suffix, "") if self.event_suffix else impath
+
+            depth_path = osp.join(scene_dir, base_impath + ".exr")
             if osp.exists(depth_path):
                 depthmap = imread_cv2(depth_path)
             else:
                 depthmap = np.zeros((image.shape[0], image.shape[1]), dtype=np.float32)
                 
-            camera_params = np.load(osp.join(scene_dir, impath + ".npz"))
+            camera_params = np.load(osp.join(scene_dir, base_impath + ".npz"))
             intrinsics = np.float32(camera_params["intrinsics"])
             camera_pose = np.float32(camera_params["cam2world"])
 

@@ -158,8 +158,13 @@ class DSEC_Multi(BaseMultiViewDataset):
                 else:
                     image = self._read_event_image(scene_dir, impath)
 
-            depthmap = imread_cv2(osp.join(scene_dir, impath + ".exr"))
-            camera_params = np.load(osp.join(scene_dir, impath + ".npz"))
+            # impath could be "000000" or "000000_event" depending on the modality replacement logic.
+            # However, the physical depth map and pose file ALWAYS correspond to the base frame "000000".
+            # We must strip out the "_event" suffix when reading .exr and .npz to avoid FileNotFoundError!
+            base_impath = impath.replace(self.event_suffix, "") if self.event_suffix else impath
+            
+            depthmap = imread_cv2(osp.join(scene_dir, base_impath + ".exr"))
+            camera_params = np.load(osp.join(scene_dir, base_impath + ".npz"))
             intrinsics = np.float32(camera_params["intrinsics"])
             camera_pose = np.float32(camera_params["cam2world"])
 
