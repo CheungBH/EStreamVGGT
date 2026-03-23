@@ -111,7 +111,15 @@ class EventScape_Multi(BaseMultiViewDataset):
         if self.max_interval == 1:
             pos = list(range(num_views))
             
-        image_idxs = np.array(all_image_ids)[start_id:start_id+num_views] if self.max_interval == 1 else np.array(all_image_ids)[pos]
+            # CRITICAL FIX: Ensure start_id + num_views doesn't exceed the scene's available frames
+            if start_id + num_views > len(all_image_ids):
+                # If we are too close to the end, shift the start_id back
+                start_id = len(all_image_ids) - num_views
+                
+            image_idxs = np.array(all_image_ids)[start_id:start_id+num_views]
+        else:
+            image_idxs = np.array(all_image_ids)[pos]
+            
         views = []
         ordered_video = True
 
