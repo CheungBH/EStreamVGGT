@@ -73,18 +73,57 @@ def run(args):
         positions = np.loadtxt(pos_file)
         orientations = np.loadtxt(ori_file)
         
+        def carla_to_opencv_cam2world(x, y, z, pitch, yaw, roll):
+            # CARLA uses left-handed coordinates: X-forward, Y-right, Z-up
+            # OpenCV uses right-handed coordinates: X-right, Y-down, Z-forward
+            pitch, yaw, roll = np.deg2rad([pitch, yaw, roll])
+
+            cy, sy = np.cos(yaw), np.sin(yaw)
+            cr, sr = np.cos(roll), np.sin(roll)
+            cp, sp = np.cos(pitch), np.sin(pitch)
+
+            # Construct CARLA left-handed cam2world matrix
+            P_carla = np.eye(4, dtype=np.float32)
+            P_carla[0, 0] = cp * cy
+            P_carla[0, 1] = cy * sp * sr - sy * cr
+            P_carla[0, 2] = -cy * sp * cr - sy * sr
+            P_carla[0, 3] = x
+
+            P_carla[1, 0] = cp * sy
+            P_carla[1, 1] = sy * sp * sr + cy * cr
+            P_carla[1, 2] = -sy * sp * cr + cy * sr
+            P_carla[1, 3] = y
+
+            P_carla[2, 0] = sp
+            P_carla[2, 1] = -cp * sr
+            P_carla[2, 2] = cp * cr
+            P_carla[2, 3] = z
+
+            # Transformation matrix from OpenCV camera to CARLA camera
+            T = np.array([
+                [0,  0,  1,  0],
+                [1,  0,  0,  0],
+                [0, -1,  0,  0],
+                [0,  0,  0,  1]
+            ], dtype=np.float32)
+
+            # Inverse transformation
+            T_inv = np.array([
+                [0,  1,  0,  0],
+                [0,  0, -1,  0],
+                [1,  0,  0,  0],
+                [0,  0,  0,  1]
+            ], dtype=np.float32)
+
+            # Convert to OpenCV right-handed cam2world matrix
+            P_cv = T_inv @ P_carla @ T
+            return P_cv
+
         poses = []
-        from scipy.spatial.transform import Rotation as R
         for p, o in zip(positions, orientations):
-            M = np.eye(4, dtype=np.float32)
-            M[:3, 3] = p  # x, y, z
-            
-            # CARLA orientation is typically (pitch, yaw, roll) in degrees
-            # We convert to rotation matrix
-            # 'yxz' is common for pitch, yaw, roll mapping to standard axes.
-            rot = R.from_euler('yxz', [o[0], o[1], o[2]], degrees=True).as_matrix()
-            M[:3, :3] = rot
-            poses.append(M)
+            # p: [x, y, z], o: [pitch, yaw, roll]
+            P_cv = carla_to_opencv_cam2world(p[0], p[1], p[2], o[0], o[1], o[2])
+            poses.append(P_cv)
             
         for i in range(num_frames):
             frame_id = f"{i:06d}"
