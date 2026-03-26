@@ -26,7 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >= 1.12
 
 from dust3r.model import (
-    PreTrainedModel,
+    # PreTrainedModel,
     ARCroco3DStereo,
     ARCroco3DStereoConfig,
     inf,
@@ -121,7 +121,7 @@ def train(args):
         cap = torch.cuda.get_device_capability(0)[0] if torch.cuda.is_available() else 0
     except Exception:
         cap = 0
-    mp = "bf16" if cap >= 8 else "fp16"
+    # mp = "bf16" if cap >= 8 else "fp16"
     # allow backend override via config or env (default nccl)
     import os
     dist_backend = getattr(args, "dist_backend", None) or os.environ.get("DIST_BACKEND", "nccl")
@@ -132,7 +132,7 @@ def train(args):
     else:
         accelerator = Accelerator(
             gradient_accumulation_steps=args.accum_iter,
-            mixed_precision=mp,
+            # mixed_precision=mp,
             kwargs_handlers=[
                 DistributedDataParallelKwargs(find_unused_parameters=True),
                 InitProcessGroupKwargs(timeout=timedelta(seconds=6000), backend=dist_backend),
@@ -327,9 +327,29 @@ def train(args):
     if hasattr(model, 'aggregator') and hasattr(model.aggregator, 'register_token'):
         model.aggregator.register_token.requires_grad = False
 
-    model.camera_head.requires_grad = False
-    model.depth_head.requires_grad = False
-    model.track_head.requires_grad = False
+    # IMPORTANT: Use command-line arguments to dynamically freeze heads
+    freeze_camera = getattr(args, "freeze_camera", False)
+    freeze_depth = getattr(args, "freeze_depth", False)
+    freeze_point = getattr(args, "freeze_point", False)
+    freeze_track = getattr(args, "freeze_track", True) # track_head is frozen by default unless explicitly specified
+
+    printer.info(f"Head freezing config: camera={freeze_camera}, depth={freeze_depth}, point={freeze_point}, track={freeze_track}")
+
+    if hasattr(model, 'camera_head'):
+        for param in model.camera_head.parameters():
+            param.requires_grad = not freeze_camera
+            
+    if hasattr(model, 'depth_head'):
+        for param in model.depth_head.parameters():
+            param.requires_grad = not freeze_depth
+            
+    if hasattr(model, 'point_head'):
+        for param in model.point_head.parameters():
+            param.requires_grad = not freeze_point
+
+    if hasattr(model, 'track_head'):
+        for param in model.track_head.parameters():
+            param.requires_grad = not freeze_track
 
     
 
@@ -1154,6 +1174,7 @@ def test_one_epoch(
             use_amp=bool(args.amp),
             inference=True,
         )
+        return result
 
         loss_value, loss_details = 0.0, {}
         metric_logger.update(loss=float(loss_value), **loss_details)
@@ -1515,7 +1536,7 @@ def test_one_epoch(
         save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict, num_views=args.num_test_views, modality=args.modality)
 
     del loss_details, loss_value, batch
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     return results
 
@@ -1787,6 +1808,22 @@ if __name__ == "__main__":
             if argv[i] == "--modality" and i + 1 < len(argv):
                 out.append(f"modality={argv[i+1]}")
                 i += 2
+                continue
+            if argv[i] == "--freeze_camera":
+                out.append("freeze_camera=true")
+                i += 1
+                continue
+            if argv[i] == "--freeze_depth":
+                out.append("freeze_depth=true")
+                i += 1
+                continue
+            if argv[i] == "--freeze_point":
+                out.append("freeze_point=true")
+                i += 1
+                continue
+            if argv[i] == "--unfreeze_track":
+                out.append("freeze_track=false")
+                i += 1
                 continue
             out.append(argv[i])
             i += 1

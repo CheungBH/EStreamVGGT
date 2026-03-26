@@ -15,11 +15,11 @@ test_criterion: Regr3DPose(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_va
 allow_repeat: False
 
 # Using DSEC_Multi dataloader which is already implemented for DSEC format
-dataset_train: DSEC_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/Users/cheungbh/Documents/PhDCode/EStreamVGGT/preprocessed_dsec", modality="${modality}",
+dataset_train: DSEC_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/Users/cheungbh/Documents/PhDCode/EStreamVGGT/data/DSEC", modality="${modality}",
   aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 
-dataset_test: DSEC_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/Users/cheungbh/Documents/PhDCode/EStreamVGGT/preprocessed_dsec", modality="${modality}",
+dataset_test: DSEC_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/Users/cheungbh/Documents/PhDCode/EStreamVGGT/data/DSEC", modality="${modality}",
   aug_crop=16, resolution=[(518, 336)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 
@@ -42,7 +42,7 @@ min_lr: 1e-7
 warmup_epochs: 0.5
 amp: 1
 
-num_workers: 12
+num_workers: 0
 world_size: 1
 local-rank: -1
 dist_url: 'env://'
@@ -67,3 +67,9 @@ hydra:
   verbose: True
   run:
     dir: ${save_dir}/${exp_name}
+
+# Head Freezing config
+freeze_camera: false
+freeze_depth: false
+freeze_point: false
+freeze_track: true
