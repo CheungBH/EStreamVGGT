@@ -67,3 +67,9 @@ hydra:
   verbose: True
   run:
     dir: ${save_dir}/${exp_name}
+
+# Head Freezing config
+freeze_camera: false
+freeze_depth: false
+freeze_point: false
+freeze_track: true
