@@ -485,6 +485,7 @@ def train(args):
         eval_every = getattr(args, "eval_freq", 1)
         # Always evaluate at epoch 0 (zero-shot baseline) OR at eval_freq
         if epoch == 0 or (eval_every > 0 and epoch % eval_every == 0):
+            printer.info(f"Running evaluation for epoch {epoch}...")
             test_stats = {}
             for test_name, testset in data_loader_test.items():
                 stats = test_one_epoch(
