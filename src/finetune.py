@@ -473,7 +473,7 @@ def train(args):
     for epoch in range(args.start_epoch, args.epochs + 1):
 
         # Save immediately the last checkpoint
-        if epoch > args.start_epoch:
+        if epoch > args.start_epoch and epoch > 0:
             if (
                 args.save_freq
                 and np.allclose(epoch / args.save_freq, int(epoch / args.save_freq))
@@ -508,7 +508,7 @@ def train(args):
         else:
             write_log_stats(epoch, train_stats, {})
 
-        if epoch > args.start_epoch:
+        if epoch > args.start_epoch and epoch > 0:
             if args.keep_freq and epoch % args.keep_freq == 0:
                 save_model(epoch - 1, str(epoch), best_so_far, args.start_step)
             if new_best:
