@@ -482,10 +482,9 @@ def train(args):
                 save_model(epoch - 1, "last", best_so_far, args.start_step)
 
         new_best = False
-        eval_every = 1
-        if eval_every is None:
-            eval_every = getattr(args, "eval_freq", 0)
-        if eval_every > 0 and epoch % eval_every == 0:
+        eval_every = getattr(args, "eval_freq", 1)
+        # Always evaluate at epoch 0 (zero-shot baseline) OR at eval_freq
+        if epoch == 0 or (eval_every > 0 and epoch % eval_every == 0):
             test_stats = {}
             for test_name, testset in data_loader_test.items():
                 stats = test_one_epoch(
@@ -514,8 +513,19 @@ def train(args):
             if new_best:
                 save_model(epoch - 1, "best", best_so_far, args.start_step)
         if epoch >= args.epochs:
-            break  # exit after writing last test to disk
+            # We don't want to skip testing on the very last epoch, but we DO want to skip training on it.
+            # So we move this break to AFTER the training block, or handle it properly.
+            pass
 
+        # Skip training if we are just running a zero-shot epoch 0 baseline
+        if epoch == 0 and args.start_epoch == 0 and args.epochs == 0:
+            break
+            
+        # If epoch == 0 but we are meant to train (e.g., args.epochs > 0), 
+        # we only evaluated the zero-shot baseline, we don't "train" on epoch 0.
+        # Training starts from epoch 1.
+        if epoch == 0:
+            continue
 
         # Train
         train_stats = train_one_epoch(
@@ -529,6 +539,9 @@ def train(args):
             log_writer=log_writer,
             args=args
         )
+
+        if epoch >= args.epochs:
+            break  # exit after writing last test to disk and finishing the last training epoch
 
 
     total_time = time.time() - start_time
