@@ -9,8 +9,8 @@ num_test_views: 10
 n_corres_train: 0
 n_corres_test: 0
 
-train_criterion: ConfLoss(Regr3DPose(L21, norm_mode='?avg_dis'), alpha=0.2) + FinetuneLoss()
-test_criterion: Regr3DPose(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_value=0) + Regr3DPose_ScaleInv(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_value=0) + FinetuneLoss()
+train_criterion: FinetuneLoss(use_camera_loss=False)
+test_criterion: FinetuneLoss(use_camera_loss=False)
 
 allow_repeat: False
 
@@ -69,7 +69,7 @@ hydra:
     dir: ${save_dir}/${exp_name}
 
 # Head Freezing config
-freeze_camera: false
+freeze_camera: true
 freeze_depth: false
-freeze_point: false
+freeze_point: true
 freeze_track: true
