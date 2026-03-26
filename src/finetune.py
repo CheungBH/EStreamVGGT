@@ -472,19 +472,67 @@ def train(args):
 
     for epoch in range(args.start_epoch, args.epochs + 1):
 
-        # Save immediately the last checkpoint
-        if epoch > args.start_epoch and epoch > 0:
-            if (
-                args.save_freq
-                and np.allclose(epoch / args.save_freq, int(epoch / args.save_freq))
-                or epoch == args.epochs
-            ):
-                save_model(epoch - 1, "last", best_so_far, args.start_step)
-
         new_best = False
         eval_every = getattr(args, "eval_freq", 1)
-        # Always evaluate at epoch 0 (zero-shot baseline) OR at eval_freq
-        if epoch == 0 or (eval_every > 0 and epoch % eval_every == 0):
+        
+        # -------------------------------------------------------------
+        # 0. ZERO-SHOT EVALUATION (Only at Epoch 0)
+        # -------------------------------------------------------------
+        if epoch == 0:
+            printer.info(f"Running Zero-shot evaluation for epoch {epoch}...")
+            test_stats = {}
+            for test_name, testset in data_loader_test.items():
+                stats = test_one_epoch(
+                    model,
+                    None,
+                    test_criterion,
+                    testset,
+                    accelerator,
+                    device,
+                    epoch,
+                    args=args,
+                    log_writer=log_writer,
+                    prefix=test_name,
+                )
+                test_stats[test_name] = stats
+            write_log_stats(epoch, {}, test_stats)
+            
+            # Skip training if we are just running a zero-shot epoch 0 baseline
+            if args.start_epoch == 0 and args.epochs == 0:
+                break
+                
+            # We don't "train" on epoch 0. Training starts from epoch 1.
+            continue
+
+        # -------------------------------------------------------------
+        # 1. TRAIN
+        # -------------------------------------------------------------
+        train_stats = train_one_epoch(
+            model,
+            train_criterion,
+            data_loader_train,
+            optimizer,
+            accelerator,
+            epoch,
+            loss_scaler,
+            log_writer=log_writer,
+            args=args
+        )
+
+        # -------------------------------------------------------------
+        # 2. SAVE (Last Checkpoint)
+        # -------------------------------------------------------------
+        if (
+            args.save_freq
+            and np.allclose(epoch / args.save_freq, int(epoch / args.save_freq))
+            or epoch == args.epochs
+        ):
+            save_model(epoch, "last", best_so_far, args.start_step)
+
+        # -------------------------------------------------------------
+        # 3. EVALUATE (Regular Evaluation)
+        # -------------------------------------------------------------
+        if eval_every > 0 and epoch % eval_every == 0:
             printer.info(f"Running evaluation for epoch {epoch}...")
             test_stats = {}
             for test_name, testset in data_loader_test.items():
@@ -508,38 +556,13 @@ def train(args):
         else:
             write_log_stats(epoch, train_stats, {})
 
-        if epoch > args.start_epoch and epoch > 0:
-            if args.keep_freq and epoch % args.keep_freq == 0:
-                save_model(epoch - 1, str(epoch), best_so_far, args.start_step)
-            if new_best:
-                save_model(epoch - 1, "best", best_so_far, args.start_step)
-        if epoch >= args.epochs:
-            # We don't want to skip testing on the very last epoch, but we DO want to skip training on it.
-            # So we move this break to AFTER the training block, or handle it properly.
-            pass
-
-        # Skip training if we are just running a zero-shot epoch 0 baseline
-        if epoch == 0 and args.start_epoch == 0 and args.epochs == 0:
-            break
-            
-        # If epoch == 0 but we are meant to train (e.g., args.epochs > 0), 
-        # we only evaluated the zero-shot baseline, we don't "train" on epoch 0.
-        # Training starts from epoch 1.
-        if epoch == 0:
-            continue
-
-        # Train
-        train_stats = train_one_epoch(
-            model,
-            train_criterion,
-            data_loader_train,
-            optimizer,
-            accelerator,
-            epoch,
-            loss_scaler,
-            log_writer=log_writer,
-            args=args
-        )
+        # -------------------------------------------------------------
+        # 4. SAVE (Best/Keep Checkpoints)
+        # -------------------------------------------------------------
+        if args.keep_freq and epoch % args.keep_freq == 0:
+            save_model(epoch, str(epoch), best_so_far, args.start_step)
+        if new_best:
+            save_model(epoch, "best", best_so_far, args.start_step)
 
         if epoch >= args.epochs:
             break  # exit after writing last test to disk and finishing the last training epoch
