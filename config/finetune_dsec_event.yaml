@@ -1,0 +1,69 @@
+pretrained: ../checkpoints/model.pt
+load_only_encoder: False
+long_context: False
+fixed_length: True
+resume: Null
+benchmark: False
+num_views: 4
+num_test_views: 4
+n_corres_train: 0
+n_corres_test: 0
+
+train_criterion: ConfLoss(Regr3DPose(L21, norm_mode='?avg_dis'), alpha=0.2) + FinetuneLoss()
+test_criterion: Regr3DPose(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_value=0) + Regr3DPose_ScaleInv(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_value=0) + FinetuneLoss()
+
+allow_repeat: False
+
+# Using DSEC_Multi dataloader which is already implemented for DSEC format
+dataset_train: DSEC_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/home/bhzhang/Documents/datasets/streamVGGT/train", modality="${modality}",
+  aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],  
+  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+
+dataset_test: DSEC_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/home/bhzhang/Documents/datasets/streamVGGT/val", modality="${modality}",
+  aug_crop=16, resolution=[(518, 336)],  
+  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+
+train_dataset: 5000 @ ${dataset_train}
+test_dataset: 1000 @ ${dataset_test}
+
+# Can be "rgb", "event", "rgb_first_event", "rgb_event_loop", "rgb_empty"
+modality: "event"
+
+seed: 0
+batch_size: 1
+accum_iter: 1
+gradient_checkpointing: False
+epochs: 10
+start_epoch: 0
+start_step: 0
+weight_decay: 0.05
+lr: 1e-5
+min_lr: 1e-7
+warmup_epochs: 0.5
+amp: 1
+
+num_workers: 12
+world_size: 1
+local-rank: -1
+dist_url: 'env://'
+rank: 0
+gpu: 0
+distributed: False
+dist_backend: 'nccl'
+
+eval_freq: 1
+save_freq: 0.1
+max_checkpoints: 10
+keep_freq: 1
+print_freq: 10
+print_img_freq: 50000000
+num_imgs_vis: 4
+save_dir: '/media/bhzhang/HDD/checkpoints/estreamVGGT_checkpoints_dsec'
+exp_name: 'event'
+task: 'VGGT'
+logdir: ${save_dir}/${exp_name}/logs
+output_dir: ${save_dir}/${exp_name}/
+hydra:
+  verbose: True
+  run:
+    dir: ${save_dir}/${exp_name}
