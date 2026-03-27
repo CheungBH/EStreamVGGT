@@ -1211,7 +1211,7 @@ def test_one_epoch(
             use_amp=bool(args.amp),
             inference=True,
         )
-        return result
+        # return result
 
         loss_value, loss_details = 0.0, {}
         metric_logger.update(loss=float(loss_value), **loss_details)
