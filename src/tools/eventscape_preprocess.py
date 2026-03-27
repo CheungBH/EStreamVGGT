@@ -74,49 +74,77 @@ def run(args):
         orientations = np.loadtxt(ori_file)
         
         def carla_to_opencv_cam2world(x, y, z, pitch, yaw, roll):
-            # CARLA uses left-handed coordinates: X-forward, Y-right, Z-up
-            # OpenCV uses right-handed coordinates: X-right, Y-down, Z-forward
-            pitch, yaw, roll = np.deg2rad([pitch, yaw, roll])
-
-            cy, sy = np.cos(yaw), np.sin(yaw)
-            cr, sr = np.cos(roll), np.sin(roll)
-            cp, sp = np.cos(pitch), np.sin(pitch)
-
-            # Construct CARLA left-handed cam2world matrix
-            P_carla = np.eye(4, dtype=np.float32)
-            P_carla[0, 0] = cp * cy
-            P_carla[0, 1] = cy * sp * sr - sy * cr
-            P_carla[0, 2] = -cy * sp * cr - sy * sr
-            P_carla[0, 3] = x
-
-            P_carla[1, 0] = cp * sy
-            P_carla[1, 1] = sy * sp * sr + cy * cr
-            P_carla[1, 2] = -sy * sp * cr + cy * sr
-            P_carla[1, 3] = y
-
-            P_carla[2, 0] = sp
-            P_carla[2, 1] = -cp * sr
-            P_carla[2, 2] = cp * cr
-            P_carla[2, 3] = z
-
-            # Transformation matrix from OpenCV camera to CARLA camera
-            T = np.array([
-                [0,  0,  1,  0],
-                [1,  0,  0,  0],
-                [0, -1,  0,  0],
-                [0,  0,  0,  1]
+            # CARLA coordinates (Left-Handed): X-forward, Y-right, Z-up
+            # Pitch: Y-axis, Yaw: Z-axis, Roll: X-axis
+            #
+            # OpenCV coordinates (Right-Handed): X-right, Y-down, Z-forward
+            #
+            # Direct mapping from CARLA parameters to OpenCV cam2world matrix
+            
+            # 1. Convert to radians
+            pitch_rad = np.deg2rad(pitch)
+            yaw_rad = np.deg2rad(yaw)
+            roll_rad = np.deg2rad(roll)
+            
+            # 2. CARLA to OpenCV rotation mapping:
+            # - CARLA Yaw (around Z-up) maps to negative Yaw around OpenCV Y-down
+            # - CARLA Pitch (around Y-right) maps to Pitch around OpenCV X-right
+            # - CARLA Roll (around X-forward) maps to Roll around OpenCV Z-forward
+            # We must build the rotation matrix directly in OpenCV's right-handed system.
+            # Typical driving convention: R = Rz(yaw) * Rx(pitch) * Ry(roll) in OpenCV
+            
+            # However, the most robust way that avoids left/right handed composition errors
+            # is to map the basis vectors directly.
+            # Let's define the camera's basis vectors in the World (CARLA) frame:
+            
+            cy, sy = np.cos(yaw_rad), np.sin(yaw_rad)
+            cr, sr = np.cos(roll_rad), np.sin(roll_rad)
+            cp, sp = np.cos(pitch_rad), np.sin(pitch_rad)
+            
+            # Left-handed CARLA rotation matrix (camera to world)
+            R_carla = np.array([
+                [cp * cy, cy * sp * sr - sy * cr, -cy * sp * cr - sy * sr],
+                [cp * sy, sy * sp * sr + cy * cr, -sy * sp * cr + cy * sr],
+                [sp,      -cp * sr,               cp * cr              ]
             ], dtype=np.float32)
-
-            # Inverse transformation
-            T_inv = np.array([
-                [0,  1,  0,  0],
-                [0,  0, -1,  0],
-                [1,  0,  0,  0],
-                [0,  0,  0,  1]
-            ], dtype=np.float32)
-
-            # Convert to OpenCV right-handed cam2world matrix
-            P_cv = T_inv @ P_carla @ T
+            
+            # The columns of R_carla are the camera's axes (Fwd, Right, Up) expressed in CARLA World.
+            fwd_carla = R_carla[:, 0]
+            right_carla = R_carla[:, 1]
+            up_carla = R_carla[:, 2]
+            
+            # Now we want the OpenCV camera's axes (Right, Down, Fwd) expressed in an OpenCV World.
+            # Let's assume OpenCV World is: X_w=Right, Y_w=Down, Z_w=Forward.
+            # To match CARLA's World (X_w=Fwd, Y_w=Right, Z_w=Up):
+            # OpenCV_X_w = CARLA_Y_w
+            # OpenCV_Y_w = -CARLA_Z_w
+            # OpenCV_Z_w = CARLA_X_w
+            
+            # So the OpenCV camera axes in CARLA World are:
+            cv_right_in_carla = right_carla
+            cv_down_in_carla = -up_carla
+            cv_fwd_in_carla = fwd_carla
+            
+            # Now express these vectors in OpenCV World
+            def carla_vec_to_cv_world(v):
+                # v = [x_carla, y_carla, z_carla] (Fwd, Right, Up)
+                # returns [y_carla, -z_carla, x_carla] (Right, Down, Fwd)
+                return np.array([v[1], -v[2], v[0]], dtype=np.float32)
+                
+            col_0 = carla_vec_to_cv_world(cv_right_in_carla)
+            col_1 = carla_vec_to_cv_world(cv_down_in_carla)
+            col_2 = carla_vec_to_cv_world(cv_fwd_in_carla)
+            
+            R_cv = np.column_stack((col_0, col_1, col_2))
+            
+            # Translation
+            t_carla = np.array([x, y, z], dtype=np.float32)
+            t_cv = carla_vec_to_cv_world(t_carla)
+            
+            P_cv = np.eye(4, dtype=np.float32)
+            P_cv[:3, :3] = R_cv
+            P_cv[:3, 3] = t_cv
+            
             return P_cv
 
         poses = []
