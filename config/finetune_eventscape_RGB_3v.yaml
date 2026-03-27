@@ -23,7 +23,7 @@ dataset_test: EventScape_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/
   aug_crop=16, resolution=[(518, 336)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 
-train_dataset: 5000 @ ${dataset_train}
+train_dataset: 25000 @ ${dataset_train}
 test_dataset: 1000 @ ${dataset_test}
 
 # Can be "rgb", "event", "rgb_first_event", "rgb_event_loop", "rgb_empty"
@@ -33,13 +33,13 @@ seed: 0
 batch_size: 1
 accum_iter: 1
 gradient_checkpointing: False
-epochs: 6
+epochs: 1
 start_epoch: 0
 start_step: 0
 weight_decay: 0.05
 lr: 1e-5
 min_lr: 1e-7
-warmup_epochs: 0.5
+warmup_epochs: 0.1
 amp: 1
 
 num_workers: 12
