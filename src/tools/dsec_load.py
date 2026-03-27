@@ -111,14 +111,33 @@ def process_subsequence(args, base_name, sub_name):
     # ====================== 主循环 ======================
     import bisect
     for fid in tqdm.tqdm(frame_ids, desc=seq_name):
-        # RGB
+        
+        # 推进当前帧的目标时间戳
+        t_curr_us = t_prev_us + event_window_us
+        
+        # Depth - 检查是否有深度图
+        disp_path = disp_dir / f"{fid}.png"
+        if not disp_path.exists():
+            # 没有深度图，说明这是一个“间隔帧”。
+            # 我们不保存它的任何数据（不存RGB，不存npz），
+            # 但我们 *不更新* t_prev_us。
+            # 这样，下一个有深度图的帧进来时，它的事件起始时间仍然是上一次有深度的时刻，
+            # 从而实现事件的跨帧累积（比如累积 100ms）！
+            t_prev_us = t_prev_us # 保持不变
+            continue
+            
+        disp_u16 = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
+        if disp_u16 is None:
+            t_prev_us = t_prev_us # 保持不变
+            continue
+
+        # 如果运行到这里，说明本帧有有效的深度图。
+
+        # 1. RGB (只保存有 Depth 对应的 RGB)
         rgb = cv2.imread(str(img_dir / f"{fid}.png"))
         cv2.imwrite(osp.join(seq_dst, f"{fid}.png"), rgb)
 
-        # Depth
-        disp_path = disp_dir / f"{fid}.png"
-
-        disp_u16 = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
+        # 2. Depth
         disp_f = disp_u16.astype(np.float32) / 256.0
         valid = disp_u16 > 0
         depth = cv2.reprojectImageTo3D(disp_f, Q)[..., 2]
@@ -126,14 +145,18 @@ def process_subsequence(args, base_name, sub_name):
         depth = np.clip(depth, 0.1, 80.0)
         cv2.imwrite(osp.join(seq_dst, f"{fid}.exr"), depth.astype(np.float32))
 
-        # Event
-        t_curr_us = t_prev_us + event_window_us
+        # 3. Event
+        # 这里的 mask 截取的是 [上一个有深度的时刻, 当前时刻) 的所有事件
+        # 如果中间跳过了一帧，这里截取的就是 100ms 的事件量！
         mask = (events['t'] >= t_prev_us) & (events['t'] < t_curr_us)
         ev_img = aggregate_events_xy_p(events['x'][mask], events['y'][mask], events['p'][mask], H, W)
         cv2.imwrite(osp.join(seq_dst, f"{fid}_event.png"), ev_img)
+        
+        # 成功保存了一个完整样本后，更新 t_prev_us 为当前的 t_curr_us，
+        # 作为下一个样本事件累积的起点。
         t_prev_us = t_curr_us
 
-        # Pose
+        # 4. Pose
         t_sec = t_curr_us / 1e6
         pose = None
         if pose_times:
