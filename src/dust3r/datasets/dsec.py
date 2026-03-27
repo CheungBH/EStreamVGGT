@@ -167,6 +167,20 @@ class DSEC_Multi(BaseMultiViewDataset):
             camera_params = np.load(osp.join(scene_dir, base_impath + ".npz"))
             intrinsics = np.float32(camera_params["intrinsics"])
             camera_pose = np.float32(camera_params["cam2world"])
+            
+            # Fix intrinsics mismatch if images were resized during preprocessing/saving
+            H_img, W_img = image.shape[:2]
+            cx, cy = intrinsics[:2, 2]
+            
+            # The assert in base_multiview_dataset requires cx, cy to be within a reasonable center crop.
+            # If cx > W_img, it means the intrinsics are from a higher resolution image.
+            # We scale the intrinsics based on the expected original DSEC resolution (1440x1080) vs current image.
+            # (Or dynamically by cx vs W_img/2)
+            if cx > W_img * 0.8 or cy > H_img * 0.8:
+                scale_x = W_img / (cx * 2.0)
+                scale_y = H_img / (cy * 2.0)
+                intrinsics[0, :] *= scale_x
+                intrinsics[1, :] *= scale_y
 
             image, depthmap, intrinsics = self._crop_resize_if_necessary(
                 image, depthmap, intrinsics, resolution, rng, info=(scene_dir, impath)
