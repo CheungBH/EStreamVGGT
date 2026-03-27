@@ -85,23 +85,31 @@ def process_subsequence(args, base_name, sub_name):
 
     # ====================== 读取 pose.bag ======================
     pose_dict = {}
-    if pose_bag_file:
+    pose_times = []
+    if pose_bag_file.exists():
         with AnyReader([pose_bag_file]) as reader:
             for conn in reader.connections:
                 if conn.topic == "/pose":
                     for _, ts_ns, raw in reader.messages(connections=[conn]):
                         msg = reader.deserialize(raw, conn.msgtype)
                         t_sec = ts_ns / 1e9
-                        p = msg.pose.position
-                        q = msg.pose.orientation
+                        try:
+                            p = msg.pose.pose.position
+                            q = msg.pose.pose.orientation
+                        except AttributeError:
+                            p = msg.pose.position
+                            q = msg.pose.orientation
                         pose = np.eye(4, dtype=np.float32)
                         pose[:3, 3] = [p.x, p.y, p.z]
                         rot = R.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
                         pose[:3, :3] = rot
                         pose_dict[t_sec] = pose
+                        pose_times.append(t_sec)
+        pose_times.sort()
         print(f"从 pose.bag 读取到 {len(pose_dict)} 条 pose")
 
     # ====================== 主循环 ======================
+    import bisect
     for fid in tqdm.tqdm(frame_ids, desc=seq_name):
         # RGB
         rgb = cv2.imread(str(img_dir / f"{fid}.png"))
@@ -127,7 +135,20 @@ def process_subsequence(args, base_name, sub_name):
 
         # Pose
         t_sec = t_curr_us / 1e6
-        pose = pose_dict.get(t_sec)
+        pose = None
+        if pose_times:
+            idx = bisect.bisect_left(pose_times, t_sec)
+            if idx == 0:
+                best_t = pose_times[0]
+            elif idx == len(pose_times):
+                best_t = pose_times[-1]
+            else:
+                t1 = pose_times[idx - 1]
+                t2 = pose_times[idx]
+                best_t = t1 if abs(t1 - t_sec) < abs(t2 - t_sec) else t2
+            
+            # 直接赋值最近的时间戳对应的 pose
+            pose = pose_dict[best_t]
 
         np.savez(osp.join(seq_dst, f"{fid}.npz"),
                  intrinsics=K,
