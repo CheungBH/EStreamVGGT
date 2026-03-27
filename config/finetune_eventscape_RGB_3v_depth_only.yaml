@@ -15,11 +15,11 @@ test_criterion: FinetuneLoss(use_camera_loss=False)
 allow_repeat: False
 
 # We use the newly implemented EventScape_Multi dataset loader
-dataset_train: EventScape_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/home/bhzhang/Documents/datasets/eventscape/train", modality="${modality}",
+dataset_train: EventScape_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/home/baoheng/streamvggt_asset/datasets/eventscape/train", modality="${modality}",
   aug_crop=16, resolution=[(518, 392), (518, 336), (518, 294), (518, 266), (518, 210), (518, 154), (392, 518), (336, 518), (294, 518), (266, 518)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 
-dataset_test: EventScape_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/home/bhzhang/Documents/datasets/eventscape/val", modality="${modality}",
+dataset_test: EventScape_Multi(allow_repeat=${allow_repeat}, split=None, ROOT="/home/baoheng/streamvggt_asset/datasets/eventscape/val", modality="${modality}",
   aug_crop=16, resolution=[(518, 336)],  
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
 
