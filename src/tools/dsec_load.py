@@ -80,7 +80,19 @@ def process_subsequence(args, base_name, sub_name):
             'p': f['events']['p'][:],
         }
 
-    t_prev_us = events['t'][0] if len(events['t']) > 0 else 0
+    # ====================== 读取时间戳 ======================
+    timestamp_file = img_dir.parent / "timestamps.txt"
+    with open(timestamp_file, 'r') as f:
+        img_timestamps_us = [int(line.strip()) for line in f if line.strip()]
+        
+    if not img_timestamps_us:
+        print(f"  [错误] 无法从 {timestamp_file} 读取时间戳")
+        return
+
+    # 获取真实的初始时间戳 (绝对时间)
+    # 这也是 event 和 pose 的真实起点
+    t_prev_us = img_timestamps_us[0]
+    
     event_window_us = int(args.event_window_ms * 1000)
 
     # ====================== 读取 pose.bag ======================
@@ -110,19 +122,19 @@ def process_subsequence(args, base_name, sub_name):
 
     # ====================== 主循环 ======================
     import bisect
-    for fid in tqdm.tqdm(frame_ids, desc=seq_name):
+    for idx, fid in enumerate(tqdm.tqdm(frame_ids, desc=seq_name)):
         
-        # 推进当前帧的目标时间戳
-        t_curr_us = t_prev_us + event_window_us
+        # 推进当前帧的目标时间戳 (从真实的 timestamps.txt 读取)
+        # 注意：第一帧 (idx=0) 没有前一帧，但因为 DSEC 是按照特定频率拍的，
+        # 我们可以用 t_prev_us + event_window_us。更稳妥的是直接读取下一帧的时间戳：
+        if idx + 1 < len(img_timestamps_us):
+            t_curr_us = img_timestamps_us[idx + 1]
+        else:
+            t_curr_us = t_prev_us + event_window_us
         
         # Depth - 检查是否有深度图
         disp_path = disp_dir / f"{fid}.png"
         if not disp_path.exists():
-            # 没有深度图，说明这是一个“间隔帧”。
-            # 我们不保存它的任何数据（不存RGB，不存npz），
-            # 但我们 *不更新* t_prev_us。
-            # 这样，下一个有深度图的帧进来时，它的事件起始时间仍然是上一次有深度的时刻，
-            # 从而实现事件的跨帧累积（比如累积 100ms）！
             t_prev_us = t_prev_us # 保持不变
             continue
             
@@ -130,8 +142,6 @@ def process_subsequence(args, base_name, sub_name):
         if disp_u16 is None:
             t_prev_us = t_prev_us # 保持不变
             continue
-
-        # 如果运行到这里，说明本帧有有效的深度图。
 
         # 1. RGB (只保存有 Depth 对应的 RGB)
         rgb = cv2.imread(str(img_dir / f"{fid}.png"))
