@@ -84,10 +84,6 @@ def process_subsequence(args, base_name, sub_name):
     timestamp_file = img_dir.parent / "timestamps.txt"
     with open(timestamp_file, 'r') as f:
         img_timestamps_us = [int(line.strip()) for line in f if line.strip()]
-        
-    if not img_timestamps_us:
-        print(f"  [错误] 无法从 {timestamp_file} 读取时间戳")
-        return
 
     # 获取真实的初始时间戳 (绝对时间)
     # 这也是 event 和 pose 的真实起点
