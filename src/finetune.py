@@ -1070,21 +1070,20 @@ def train_one_epoch(
 
 @torch.no_grad()
 def test_one_epoch(
-    model: torch.nn.Module,
-    teacher: torch.nn.Module,
-    criterion: torch.nn.Module,
-    data_loader: Sized,
-    accelerator: Accelerator,
-    device: torch.device,
-    epoch: int,
-    args,
-    log_writer=None,
-    prefix="test",
+        model: torch.nn.Module,
+        teacher: torch.nn.Module,
+        criterion: torch.nn.Module,
+        data_loader: Sized,
+        accelerator: Accelerator,
+        device: torch.device,
+        epoch: int,
+        args,
+        log_writer=None,
+        prefix="test",
 ):
-
     model.eval()
     metric_logger = misc.MetricLogger(delimiter="  ")
-    metric_logger.meters = defaultdict(lambda: misc.SmoothedValue(window_size=9**9))
+    metric_logger.meters = defaultdict(lambda: misc.SmoothedValue(window_size=9 ** 9))
     header = "Test Epoch: [{}]".format(epoch)
 
     if log_writer is not None:
@@ -1125,6 +1124,7 @@ def test_one_epoch(
         "track_conf_mean": {},
         "track_vis_ratio": {},
     }
+
     def _agg(metric_name, vi, val):
         if metric_name not in per_view_metrics:
             return
@@ -1174,8 +1174,17 @@ def test_one_epoch(
         # now expect [B,3,4]
         return x
 
+    # ── helper: 3x4 -> 4x4 ───────────────────────────────────────────────────
+    def _to_4x4(p34):
+        """Convert [B,3,4] -> [B,4,4] by appending [0,0,0,1] row."""
+        B = p34.shape[0]
+        bottom = torch.tensor(
+            [[[0.0, 0.0, 0.0, 1.0]]], dtype=p34.dtype, device=p34.device
+        ).expand(B, -1, -1)
+        return torch.cat([p34, bottom], dim=1)  # [B,4,4]
+
     for _, batch in enumerate(
-        metric_logger.log_every(data_loader, args.print_freq, accelerator, header)
+            metric_logger.log_every(data_loader, args.print_freq, accelerator, header)
     ):
         model_dtype = next(model.parameters()).dtype
         if not (isinstance(batch, list) and all(isinstance(v, dict) and "img" in v for v in batch)):
@@ -1211,13 +1220,19 @@ def test_one_epoch(
             use_amp=bool(args.amp),
             inference=True,
         )
-        # return result
 
         loss_value, loss_details = 0.0, {}
         metric_logger.update(loss=float(loss_value), **loss_details)
 
         if isinstance(batch, list):
             preds = result.get("pred", [])
+
+            # ── 关键修复：预计算第一帧 GT pose 的逆，用于归一化所有帧 ──────────
+            gp0_3x4 = _pose_to_3x4(batch[0]["camera_pose"], device, model_dtype)  # [B,3,4]
+            gp0_4x4 = _to_4x4(gp0_3x4)  # [B,4,4]
+            gp0_inv = torch.linalg.inv(gp0_4x4)  # [B,4,4]
+            # ────────────────────────────────────────────────────────────────────
+
             depth_absrels = []
             depth_rmses = []
             depth_log_rmses = []
@@ -1243,9 +1258,7 @@ def test_one_epoch(
                 pred_vi = preds[vi]
                 # depth metrics
                 gt_depth = view["depthmap"]
-                # normalize mask: prefer ray_mask, fallback valid_mask, else all-ones
                 m_in = view.get("ray_mask", None)
-                # squeeze/convert to boolean and broadcast
                 if isinstance(m_in, torch.Tensor):
                     mask = m_in.bool()
                 else:
@@ -1268,8 +1281,8 @@ def test_one_epoch(
                     si_rmse = torch.sqrt((((log_diff - mu).square()).masked_select(valid)).mean()).item()
                     ratio = torch.maximum(pd_safe / g_safe, g_safe / pd_safe)
                     d125 = ratio.masked_select(valid).lt(1.25).float().mean().item()
-                    d1252 = ratio.masked_select(valid).lt(1.25**2).float().mean().item()
-                    d1253 = ratio.masked_select(valid).lt(1.25**3).float().mean().item()
+                    d1252 = ratio.masked_select(valid).lt(1.25 ** 2).float().mean().item()
+                    d1253 = ratio.masked_select(valid).lt(1.25 ** 3).float().mean().item()
                     depth_absrels.append(rel)
                     depth_rmses.append(rmse)
                     depth_log_rmses.append(log_rmse)
@@ -1284,9 +1297,18 @@ def test_one_epoch(
                     _agg("depth_delta_125", vi, d125)
                     _agg("depth_delta_1252", vi, d1252)
                     _agg("depth_delta_1253", vi, d1253)
-                # pose metrics (convert 7D to 3x4 if needed)
-                gp = _pose_to_3x4(view["camera_pose"], device, model_dtype)
-                pp = _pose_to_3x4(pred_vi["camera_pose"], device, model_dtype)
+
+                # ── pose metrics ──────────────────────────────────────────────
+                # GT pose: 归一化到第一帧坐标系（与 loss 里的处理一致）
+                gp_raw = _pose_to_3x4(view["camera_pose"], device, model_dtype)  # [B,3,4]
+                gp_4x4 = _to_4x4(gp_raw)  # [B,4,4]
+                gp_norm_4x4 = gp0_inv @ gp_4x4  # [B,4,4]
+                gp = gp_norm_4x4[:, :3, :]  # [B,3,4]
+
+                # Pred pose: 模型输出已经是相对第一帧，直接用
+                pp = _pose_to_3x4(pred_vi["camera_pose"], device, model_dtype)  # [B,3,4]
+                # ─────────────────────────────────────────────────────────────
+
                 Rp = pp[:, :3, :3]
                 Rg = gp[:, :3, :3]
                 Rrel = Rp @ Rg.transpose(1, 2)
@@ -1339,23 +1361,23 @@ def test_one_epoch(
                     block = 2048
                     d_pred_to_gt = torch.full((pr_f.shape[0],), float("inf"), device=pr_f.device)
                     for j in range(0, gt_f.shape[0], block):
-                        gt_chunk = gt_f[j : j + block]
+                        gt_chunk = gt_f[j: j + block]
                         for i in range(0, pr_f.shape[0], block):
-                            pr_chunk = pr_f[i : i + block]
+                            pr_chunk = pr_f[i: i + block]
                             dist = torch.cdist(pr_chunk.unsqueeze(0), gt_chunk.unsqueeze(0), p=2).squeeze(0)
                             chunk_min = dist.min(dim=1).values
-                            d_pred_to_gt[i : i + pr_chunk.shape[0]] = torch.minimum(
-                                d_pred_to_gt[i : i + pr_chunk.shape[0]], chunk_min
+                            d_pred_to_gt[i: i + pr_chunk.shape[0]] = torch.minimum(
+                                d_pred_to_gt[i: i + pr_chunk.shape[0]], chunk_min
                             )
                     d_gt_to_pred = torch.full((gt_f.shape[0],), float("inf"), device=gt_f.device)
                     for i in range(0, pr_f.shape[0], block):
-                        pr_chunk = pr_f[i : i + block]
+                        pr_chunk = pr_f[i: i + block]
                         for j in range(0, gt_f.shape[0], block):
-                            gt_chunk = gt_f[j : j + block]
+                            gt_chunk = gt_f[j: j + block]
                             dist = torch.cdist(pr_chunk.unsqueeze(0), gt_chunk.unsqueeze(0), p=2).squeeze(0)
                             chunk_min = dist.min(dim=0).values
-                            d_gt_to_pred[j : j + gt_chunk.shape[0]] = torch.minimum(
-                                d_gt_to_pred[j : j + gt_chunk.shape[0]], chunk_min
+                            d_gt_to_pred[j: j + gt_chunk.shape[0]] = torch.minimum(
+                                d_gt_to_pred[j: j + gt_chunk.shape[0]], chunk_min
                             )
                     l1 = d_pred_to_gt.mean().item()
                     l2 = torch.sqrt(d_pred_to_gt.square().mean()).item()
@@ -1396,8 +1418,10 @@ def test_one_epoch(
                 _agg("track_conf_mean", vi, tconf.mean().item())
                 track_vis_ratios.append(tvis.float().mean().item())
                 _agg("track_vis_ratio", vi, tvis.float().mean().item())
+
             def _avg(xs):
                 return float(np.nanmean(np.array(xs, dtype=np.float32)))
+
             metric_logger.update(
                 depth_absrel=_avg(depth_absrels),
                 depth_rmse=_avg(depth_rmses),
@@ -1434,7 +1458,6 @@ def test_one_epoch(
     if accelerator.is_main_process and hasattr(args, "output_dir"):
         out_root = os.path.join(args.output_dir)
         os.makedirs(out_root, exist_ok=True)
-        # write metric.json as aggregated JSON object
         mjson = os.path.join(out_root, "metric.json")
         ep_key = f"Epoch{int(epoch)}"
         obj = {}
@@ -1447,24 +1470,24 @@ def test_one_epoch(
         obj[ep_key] = {name: float(val) for name, val in results.items()}
         with open(mjson, "w", encoding="utf-8") as wf:
             json.dump(obj, wf, indent=2, ensure_ascii=False)
-        # write metric.txt table (header once; ordered by categories)
         mtxt = os.path.join(out_root, "metric.txt")
         keys = sorted(list(results.keys()))
+
         def sel(prefixes):
             return [k for k in keys if any(k.startswith(p) for p in prefixes)]
+
         order = []
         order += sel(["loss", "pose_loss"])
         order += sel(["depth_"])
         order += sel(["pose_"])
         order += sel(["pts3d_"])
-        order += sel(["track_conf_mean","track_vis_ratio","conf_mean"])
+        order += sel(["track_conf_mean", "track_vis_ratio", "conf_mean"])
         if not os.path.exists(mtxt):
             with open(mtxt, "w", encoding="utf-8") as tf:
                 tf.write("epoch " + " ".join(order) + "\n")
         with open(mtxt, "a", encoding="utf-8") as tf:
             vals = [str(int(epoch))] + [f"{float(results[k]):.6f}" for k in order]
             tf.write(" ".join(vals) + "\n")
-    # write per-view metrics (paper subset) to metric_view.txt on main process
     if accelerator.is_main_process and hasattr(args, "output_dir"):
         outp = os.path.join(args.output_dir, "metric_view.txt")
         outp_new_txt = os.path.join(args.output_dir, "metric_views.txt")
@@ -1472,17 +1495,13 @@ def test_one_epoch(
         line = {"epoch": epoch}
         view_dict = {}
         metrics = [
-            # pose
             "auc30", "pose_rot_deg", "pose_trans_err",
-            # geometry
             "acc_mean", "acc_med",
             "comp_mean", "comp_med",
             "nc_mean", "nc_med",
             "pts3d_chamfer_l1", "pts3d_chamfer_l2",
-            # depth
             "depth_absrel", "depth_rmse", "depth_log_rmse", "depth_si_rmse",
             "depth_delta_125", "depth_delta_1252", "depth_delta_1253",
-            # tracking / conf
             "conf_mean", "track_conf_mean", "track_vis_ratio",
         ]
         num_views = int(getattr(args, "num_test_views", 0) or 0)
@@ -1492,21 +1511,19 @@ def test_one_epoch(
             for vi in range(num_views):
                 arr = per_view_metrics[m].get(vi, [])
                 if not arr:
-                    raise RuntimeError(f"Missing per-view data for {m} v{vi+1}")
-                key = f"{m}_v{vi+1}"
+                    raise RuntimeError(f"Missing per-view data for {m} v{vi + 1}")
+                key = f"{m}_v{vi + 1}"
                 view_dict[key] = float(np.mean(arr))
-        # write legacy metric_view.txt
         line[prefix] = view_dict
         with open(outp, "a", encoding="utf-8") as f:
             f.write(json.dumps(line) + "\n")
-        # write new metric_views.json as hierarchical dict per epoch
         ep_key2 = f"epoch{epoch}"
         views_obj = {}
         for vi in range(num_views):
             vm = {}
             for m in metrics:
                 vm[m] = float(np.mean(per_view_metrics[m].get(vi, [])))
-            views_obj[f"view{vi+1}"] = vm
+            views_obj[f"view{vi + 1}"] = vm
         mv_obj = {}
         if os.path.exists(outp_new_json):
             try:
@@ -1517,15 +1534,14 @@ def test_one_epoch(
         mv_obj[ep_key2] = views_obj
         with open(outp_new_json, "w", encoding="utf-8") as wf:
             json.dump(mv_obj, wf, indent=2, ensure_ascii=False)
-        # write new metric_views.txt as space-separated table
         if not os.path.exists(outp_new_txt):
             with open(outp_new_txt, "w", encoding="utf-8") as ft:
                 ft.write(" ".join(merged_headers) + "\n")
         with open(outp_new_txt, "a", encoding="utf-8") as ft:
             for vi in range(num_views):
-                row = [str(epoch), str(vi + 1)] + [f"{float(np.mean(per_view_metrics[m].get(vi, []))):.6f}" for m in metrics]
+                row = [str(epoch), str(vi + 1)] + [f"{float(np.mean(per_view_metrics[m].get(vi, []))):.6f}" for m in
+                                                   metrics]
                 ft.write(" ".join(row) + "\n")
-
 
     if log_writer is not None:
         for name, val in results.items():
@@ -1541,27 +1557,20 @@ def test_one_epoch(
             batch, result["pred"], self_view=False
         )
         for k in range(len(batch)):
-            loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
-            loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()
+            loss_details[f"pred_depth_{k + 1}"] = depths_cross[k].detach().cpu()
+            loss_details[f"gt_depth_{k + 1}"] = gt_depths_cross[k].detach().cpu()
 
-    # add original visualization inputs: gt_img_k, pred_rgb_k, masks and conf
     for k in range(len(batch)):
         view = batch[k]
-
         imgs = view["img"].detach().cpu()
-            # [B,3,H,W] -> [B,H,W,3], keep value range as is (typically [-1,1])
         imgs_hw = imgs.permute(0, 2, 3, 1)
-        loss_details[f"gt_img{k+1}"] = imgs_hw
-        loss_details[f"pred_rgb_{k+1}"] = imgs_hw
-
-        loss_details[f"img_mask_{k+1}"] = view["img_mask"].detach().cpu()
-
-        loss_details[f"ray_mask_{k+1}"] = view["ray_mask"].detach().cpu()
-
-        # conf: prefer depth_conf, fallback to conf
+        loss_details[f"gt_img{k + 1}"] = imgs_hw
+        loss_details[f"pred_rgb_{k + 1}"] = imgs_hw
+        loss_details[f"img_mask_{k + 1}"] = view["img_mask"].detach().cpu()
+        loss_details[f"ray_mask_{k + 1}"] = view["ray_mask"].detach().cpu()
         pred_vi = result["pred"][k] if isinstance(result["pred"], list) else result["pred"]
         if isinstance(pred_vi, dict):
-            loss_details[f"conf_{k+1}"] = pred_vi["depth_conf"].detach().cpu()
+            loss_details[f"conf_{k + 1}"] = pred_vi["depth_conf"].detach().cpu()
 
     if getattr(args, "num_imgs_vis", 0) and args.num_imgs_vis > 0:
         imgs_stacked_dict = get_vis_imgs_new(
@@ -1570,13 +1579,12 @@ def test_one_epoch(
             args.num_test_views,
             is_metric=batch[0]["is_metric"],
         )
-        save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict, num_views=args.num_test_views, modality=args.modality)
+        save_vis_imgs(args.output_dir, prefix, epoch, imgs_stacked_dict, num_views=args.num_test_views,
+                      modality=args.modality)
 
     del loss_details, loss_value, batch
-    # torch.cuda.empty_cache()
 
     return results
-
 
 def batch_append(original_list, new_list):
     for sublist, new_item in zip(original_list, new_list):
