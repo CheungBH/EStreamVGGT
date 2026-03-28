@@ -1267,7 +1267,14 @@ def test_one_epoch(
                 pd = pr_depth.squeeze(-1)
                 g = gt_depth
 
-                m = torch.ones_like(g, dtype=torch.bool)
+                # 优先用 valid_mask，其次用 ray_mask，最后才退化到全1
+                if "valid_mask" in view and view["valid_mask"].any():
+                    m = view["valid_mask"].bool()
+                elif isinstance(m_in, torch.Tensor) and m_in.any():
+                    m = mask  # 就是前面读的 ray_mask
+                else:
+                    m = torch.ones_like(g, dtype=torch.bool)
+
                 depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
                 valid = m & (g > depth_min) & (pd > depth_min)
                 if valid.any():
