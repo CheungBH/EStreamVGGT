@@ -10,7 +10,7 @@ import hdf5plugin
 from pathlib import Path
 from rosbags.highlevel import AnyReader
 from scipy.spatial.transform import Rotation as R
-
+import bisect
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
 
@@ -41,7 +41,7 @@ def process_subsequence(args, base_name, sub_name):
         "disparity/event" if args.use_event_view else "disparity/image")
     calib_file = DATA_ROOT / "train_calibration" / seq_name / "calibration/cam_to_cam.yaml"
 
-    pose_bag_file = DATA_ROOT / "pose" / (base_name+".bag")
+    pose_bag_file = DATA_ROOT / "pose" / (base_name + ".bag")
 
     # ====================== Calibration ======================
     with open(calib_file, 'r') as f:
@@ -85,10 +85,7 @@ def process_subsequence(args, base_name, sub_name):
     with open(timestamp_file, 'r') as f:
         img_timestamps_us = [int(line.strip()) for line in f if line.strip()]
 
-    # 获取真实的初始时间戳 (绝对时间)
-    # 这也是 event 和 pose 的真实起点
     t_prev_us = img_timestamps_us[0]
-    
     event_window_us = int(args.event_window_ms * 1000)
 
     # ====================== 读取 pose.bag ======================
@@ -117,29 +114,45 @@ def process_subsequence(args, base_name, sub_name):
         print(f"从 pose.bag 读取到 {len(pose_dict)} 条 pose")
 
     # ====================== 主循环 ======================
-    import bisect
-    for idx, fid in enumerate(tqdm.tqdm(frame_ids, desc=seq_name)):
-        
-        # 推进当前帧的目标时间戳 (从真实的 timestamps.txt 读取)
-        # 注意：第一帧 (idx=0) 没有前一帧，但因为 DSEC 是按照特定频率拍的，
-        # 我们可以用 t_prev_us + event_window_us。更稳妥的是直接读取下一帧的时间戳：
-        if idx + 1 < len(img_timestamps_us):
-            t_curr_us = img_timestamps_us[idx + 1]
+
+    for frame_idx, fid in enumerate(tqdm.tqdm(frame_ids, desc=seq_name)):
+
+        if frame_idx + 1 < len(img_timestamps_us):
+            t_curr_us = img_timestamps_us[frame_idx + 1]
         else:
             t_curr_us = t_prev_us + event_window_us
-        
-        # Depth - 检查是否有深度图
+
+        # Depth
         disp_path = disp_dir / f"{fid}.png"
         if not disp_path.exists():
-            t_prev_us = t_prev_us # 保持不变
-            continue
-            
-        disp_u16 = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
-        if disp_u16 is None:
-            t_prev_us = t_prev_us # 保持不变
             continue
 
-        # 1. RGB (只保存有 Depth 对应的 RGB)
+        disp_u16 = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
+        if disp_u16 is None:
+            continue
+
+        # 4. Pose — 修复1: 改用 bisect_pos 避免覆盖外层 frame_idx
+        t_sec = t_curr_us / 1e6
+        pose = None
+        if pose_times:
+            bisect_pos = bisect.bisect_left(pose_times, t_sec)  # ← 修复1: 原来叫 idx，与外层冲突
+            if bisect_pos == 0:
+                best_t = pose_times[0]
+            elif bisect_pos == len(pose_times):
+                best_t = pose_times[-1]
+            else:
+                t1 = pose_times[bisect_pos - 1]
+                t2 = pose_times[bisect_pos]
+                best_t = t1 if abs(t1 - t_sec) < abs(t2 - t_sec) else t2
+            pose = pose_dict[best_t]
+
+        # 修复2: pose 为 None 时跳过，避免存入无效数据
+        if pose is None:
+            print(f"警告: {fid} 没有对应 pose，跳过")
+            t_prev_us = t_curr_us
+            continue
+
+        # 1. RGB
         rgb = cv2.imread(str(img_dir / f"{fid}.png"))
         cv2.imwrite(osp.join(seq_dst, f"{fid}.png"), rgb)
 
@@ -152,33 +165,13 @@ def process_subsequence(args, base_name, sub_name):
         cv2.imwrite(osp.join(seq_dst, f"{fid}.exr"), depth.astype(np.float32))
 
         # 3. Event
-        # 这里的 mask 截取的是 [上一个有深度的时刻, 当前时刻) 的所有事件
-        # 如果中间跳过了一帧，这里截取的就是 100ms 的事件量！
         mask = (events['t'] >= t_prev_us) & (events['t'] < t_curr_us)
         ev_img = aggregate_events_xy_p(events['x'][mask], events['y'][mask], events['p'][mask], H, W)
         cv2.imwrite(osp.join(seq_dst, f"{fid}_event.png"), ev_img)
-        
-        # 成功保存了一个完整样本后，更新 t_prev_us 为当前的 t_curr_us，
-        # 作为下一个样本事件累积的起点。
+
         t_prev_us = t_curr_us
 
-        # 4. Pose
-        t_sec = t_curr_us / 1e6
-        pose = None
-        if pose_times:
-            idx = bisect.bisect_left(pose_times, t_sec)
-            if idx == 0:
-                best_t = pose_times[0]
-            elif idx == len(pose_times):
-                best_t = pose_times[-1]
-            else:
-                t1 = pose_times[idx - 1]
-                t2 = pose_times[idx]
-                best_t = t1 if abs(t1 - t_sec) < abs(t2 - t_sec) else t2
-            
-            # 直接赋值最近的时间戳对应的 pose
-            pose = pose_dict[best_t]
-
+        # 5. 保存
         np.savez(osp.join(seq_dst, f"{fid}.npz"),
                  intrinsics=K,
                  cam2world=pose)

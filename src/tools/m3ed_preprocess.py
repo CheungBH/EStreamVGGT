@@ -1,177 +1,196 @@
-import h5py
+import os
+import os.path as osp
+import argparse
 import numpy as np
 import cv2
-import json
+import h5py
+import glob
 from pathlib import Path
 from tqdm import tqdm
-import argparse
-import scipy.ndimage as ndimage
 
-def aggregate_events_xy_p(xs, ys, ps, H, W):
+os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+
+H_EVT, W_EVT = 720, 1280  # prophesee/left resolution
+
+
+def aggregate_events(xs, ys, ps, H, W):
+    """Aggregate events into an RGB image (Blue=positive, Red=negative)."""
     img = np.zeros((H, W, 3), dtype=np.uint8)
     if xs.size == 0:
         return img
     pos = ps > 0
-    neg = ps == 0
-    img[ys[pos], xs[pos]] = [255, 0, 0]   # Blue 正
-    img[ys[neg], xs[neg]] = [0, 0, 255]   # Red 负
+    neg = ~pos
+    img[ys[pos], xs[pos]] = [255, 0, 0]  # Blue for positive
+    img[ys[neg], xs[neg]] = [0, 0, 255]  # Red for negative
     return img
 
-def load_pose_gt(path):
-    poses = {}
-    with h5py.File(path, 'r') as f:
-        ts = f['ts'][:].astype(np.float64)
-        pose_data = f.get('pose') or f.get('T') or f.get('poses')
-        if pose_data is None:
-            raise KeyError("pose_gt.h5 中未找到 'pose' / 'T' / 'poses'")
-        pose_data = np.array(pose_data)
-        if pose_data.ndim == 2:
-            pose_data = pose_data.reshape(-1, 4, 4)
-        for t, p in zip(ts, pose_data):
-            poses[float(t)] = p.astype(np.float32)
-    return poses
 
-def get_closest_key(dic, target):
-    return min(dic.keys(), key=lambda k: abs(k - target))
+def process_sequence(seq_dir, dst_dir, event_window_us=50000):
+    seq_name = osp.basename(seq_dir)
+    print(f"\n=== Processing: {seq_name} ===")
 
-def project_depth_to_rgb(depth_event, K_event, T_event_to_rgb, rgb_H, rgb_W):
-    H_e, W_e = depth_event.shape
-    y_e, x_e = np.mgrid[0:H_e, 0:W_e]
-    pts = np.stack([x_e.ravel(), y_e.ravel(), np.ones_like(x_e.ravel())], axis=1)
-    pts3d = pts * depth_event.ravel()[:, None]
-    pts3d_rgb = (T_event_to_rgb[:3, :3] @ pts3d.T + T_event_to_rgb[:3, 3:]).T
-    K_rgb = np.array([[K_event[0], 0, K_event[2]],
-                      [0, K_event[1], K_event[3]],
-                      [0, 0, 1]], dtype=np.float32)
-    pts2d = (K_rgb @ pts3d_rgb.T).T
-    pts2d = pts2d[:, :2] / (pts2d[:, 2:3] + 1e-8)
-    depth_rgb = np.zeros((rgb_H, rgb_W), dtype=np.float32)
-    valid = (pts2d[:,0] >= 0) & (pts2d[:,0] < rgb_W) & (pts2d[:,1] >= 0) & (pts2d[:,1] < rgb_H)
-    if np.any(valid):
-        x_valid = pts2d[valid, 0].astype(int)
-        y_valid = pts2d[valid, 1].astype(int)
-        depth_rgb[y_valid, x_valid] = pts3d_rgb[valid, 2]
-    depth_rgb = ndimage.gaussian_filter(depth_rgb, sigma=1)
-    return np.clip(depth_rgb, 0, None)
+    seq_dst = osp.join(dst_dir, seq_name)
+    os.makedirs(seq_dst, exist_ok=True)
+
+    # ── File paths ────────────────────────────────────────────────────────────
+    data_h5_path   = osp.join(seq_dir, f"{seq_name}_data.h5")
+    depth_h5_path  = osp.join(seq_dir, f"{seq_name}_depth_gt.h5")
+    pose_h5_path   = osp.join(seq_dir, f"{seq_name}_pose_gt.h5")
+
+    for p in [data_h5_path, depth_h5_path, pose_h5_path]:
+        if not osp.exists(p):
+            print(f"  Missing: {p}, skipping.")
+            return
+
+    with h5py.File(data_h5_path,  'r') as fdata, \
+         h5py.File(depth_h5_path, 'r') as fdepth, \
+         h5py.File(pose_h5_path,  'r') as fpose:
+
+        # ── Pose (Cn_T_C0): world2cam relative to frame 0 ────────────────────
+        # Cn_T_C0[i] takes a point from C0 frame to Cn frame (world2cam)
+        # cam2world = inv(Cn_T_C0)
+        Cn_T_C0 = fpose['Cn_T_C0'][:]          # (N, 4, 4), float64
+        depth_ts = fdepth['ts'][:]              # (N,), microseconds int64
+        N = len(depth_ts)
+        print(f"  Depth/Pose frames: {N}")
+
+        # ── Depth ─────────────────────────────────────────────────────────────
+        depths = fdepth['depth/prophesee/left']  # (N, 720, 1280), lazy-load
+
+        # ── Intrinsics (prophesee/left): [fx, fy, cx, cy] ────────────────────
+        intr = fdata['prophesee/left/calib/intrinsics'][:]  # (4,)
+        fx, fy, cx, cy = float(intr[0]), float(intr[1]), float(intr[2]), float(intr[3])
+        K = np.array([[fx, 0, cx],
+                      [0, fy, cy],
+                      [0,  0,  1]], dtype=np.float32)
+
+        # ── RGB frames ────────────────────────────────────────────────────────
+        rgb_data = fdata['ovc/rgb/data']         # (M, 800, 1280, 3)
+        rgb_ts   = fdata['ovc/ts'][:]            # (M,), microseconds int64
+        M = len(rgb_ts)
+        print(f"  RGB frames: {M}")
+
+        # ── Events (prophesee/left) ───────────────────────────────────────────
+        evt_t      = fdata['prophesee/left/t']           # lazy, int64 us
+        evt_x      = fdata['prophesee/left/x']           # lazy, uint16
+        evt_y      = fdata['prophesee/left/y']           # lazy, uint16
+        evt_p      = fdata['prophesee/left/p']           # lazy, int8
+        ms_map_idx = fdata['prophesee/left/ms_map_idx']  # (T_ms,), event idx per ms
+
+        n_events_total = len(evt_t)
+        n_ms = len(ms_map_idx)
+        print(f"  Total events: {n_events_total:,}")
+
+        # ── Pre-build nearest RGB index for each depth frame ──────────────────
+        # For each depth ts, find nearest RGB frame
+        rgb_ts_sorted = rgb_ts  # already sorted
+        nearest_rgb = np.searchsorted(rgb_ts_sorted, depth_ts, side='left')
+        # clamp and pick closest
+        nearest_rgb = np.clip(nearest_rgb, 0, M - 1)
+        for i in range(N):
+            if nearest_rgb[i] > 0:
+                if abs(rgb_ts[nearest_rgb[i] - 1] - depth_ts[i]) < \
+                   abs(rgb_ts[nearest_rgb[i]]     - depth_ts[i]):
+                    nearest_rgb[i] -= 1
+
+        # ── Main loop ─────────────────────────────────────────────────────────
+        for i in tqdm(range(N), desc=seq_name):
+            frame_id = f"{i:06d}"
+
+            # 1. Pose → cam2world = inv(Cn_T_C0[i])
+            w2c = Cn_T_C0[i].astype(np.float32)   # world2cam (relative to frame 0)
+            c2w = np.linalg.inv(w2c).astype(np.float32)  # cam2world
+
+            # 2. Depth
+            depth = depths[i].astype(np.float32)   # (720, 1280)
+            # M3ED depth is in meters, clip to valid range
+            depth = np.clip(depth, 0.1, 200.0)
+            # Zero out invalid (original 0 values)
+            depth[depths[i] <= 0] = 0.0
+
+            # 3. RGB (nearest frame)
+            rgb_idx = nearest_rgb[i]
+            rgb = rgb_data[rgb_idx]                # (800, 1280, 3), uint8
+            # Resize RGB to match event camera resolution (720, 1280)
+            rgb_resized = cv2.resize(rgb, (W_EVT, H_EVT), interpolation=cv2.INTER_LINEAR)
+
+            # 4. Events (window: [ts[i-1], ts[i]) or [ts[i], ts[i]+window])
+            if i == 0:
+                t_start_us = depth_ts[0] - event_window_us
+                t_end_us   = depth_ts[0]
+            else:
+                t_start_us = depth_ts[i - 1]
+                t_end_us   = depth_ts[i]
+
+            t_start_us = max(t_start_us, 0)
+
+            # Use ms_map_idx for efficient slicing
+            t_start_ms = int(t_start_us // 1000)
+            t_end_ms   = int(t_end_us   // 1000)
+            t_start_ms = max(0, min(t_start_ms, n_ms - 1))
+            t_end_ms   = max(0, min(t_end_ms,   n_ms - 1))
+
+            idx_start = int(ms_map_idx[t_start_ms])
+            idx_end   = int(ms_map_idx[t_end_ms]) if t_end_ms < n_ms else n_events_total
+
+            if idx_end > idx_start:
+                xs = evt_x[idx_start:idx_end].astype(np.int32)
+                ys = evt_y[idx_start:idx_end].astype(np.int32)
+                ps = evt_p[idx_start:idx_end].astype(np.int32)
+                # Fine-grained filter within the ms window
+                ts_slice = evt_t[idx_start:idx_end]
+                mask = (ts_slice >= t_start_us) & (ts_slice < t_end_us)
+                ev_img = aggregate_events(xs[mask], ys[mask], ps[mask], H_EVT, W_EVT)
+            else:
+                ev_img = np.zeros((H_EVT, W_EVT, 3), dtype=np.uint8)
+
+            # ── Save ──────────────────────────────────────────────────────────
+            # RGB
+            cv2.imwrite(osp.join(seq_dst, f"{frame_id}.png"), rgb_resized)
+            # Event
+            cv2.imwrite(osp.join(seq_dst, f"{frame_id}_event.png"), ev_img)
+            # Depth
+            cv2.imwrite(osp.join(seq_dst, f"{frame_id}.exr"), depth)
+            # Camera params
+            np.savez(osp.join(seq_dst, f"{frame_id}.npz"),
+                     intrinsics=K,
+                     cam2world=c2w)
+
+    print(f"  Done → {seq_dst}  ({N} frames)")
 
 
-def preprocess_m3ed(seq_name: str,
-                    data_root="/Users/cheungbh/Documents/datasets/m3ed",
-                    out_root="/Users/cheungbh/Documents/m3ed_vggt_ready/train"):
+def run(args):
+    src = Path(args.src)
 
-    seq_dir = Path(data_root) / seq_name
-    h5_path    = seq_dir / f"{seq_name}_data.h5"
-    depth_path = seq_dir / f"{seq_name}_depth_gt.h5"
-    pose_path  = seq_dir / f"{seq_name}_pose_gt.h5"
+    if args.name:
+        # Process single sequence
+        seq_dirs = [src / args.name]
+    else:
+        # Process all sequences under src
+        seq_dirs = sorted([d for d in src.iterdir() if d.is_dir()])
 
-    out_scene = Path(out_root) / seq_name
-    for sub in ["rgb", "event", "depth", "pose"]:
-        (out_scene / sub).mkdir(parents=True, exist_ok=True)
+    print(f"Found {len(seq_dirs)} sequence(s)")
+    for seq_dir in seq_dirs:
+        process_sequence(str(seq_dir), args.dst,
+                         event_window_us=int(args.event_window_ms * 1000))
 
-    # 加载主数据 ── 根据你的文件结构修正
-    with h5py.File(h5_path, 'r') as f:
-        rgb_data = f['/ovc/rgb/data'][:]
-        rgb_ts   = f['/ovc/ts'][:].astype(np.float64)                     # ← 修正：/ovc/ts
-        ts_map_left = f['/ovc/ts_map_prophesee_left_t'][:].astype(int)    # ← 修正：/ovc/ts_map_...
+    print("\nAll done.")
 
-        events = {
-            'x': f['/prophesee/left/x'][:],
-            'y': f['/prophesee/left/y'][:],
-            't': f['/prophesee/left/t'][:].astype(np.float64) / 1e9,
-            'p': f['/prophesee/left/p'][:]
-        }
 
-        calib_e = f['/prophesee/left/calib']
-        resolution = calib_e['resolution'][:]
-        H_e, W_e = int(resolution[1]), int(resolution[0])   # 通常 [H, W]，你的 event 是 720x1280
-        if H_e > W_e: H_e, W_e = W_e, H_e                   # 强制修正
-        K_e = calib_e['intrinsics'][:]
-
-        T_cam_to_e = f['/ovc/rgb/calib/T_to_prophesee_left'][:]
-        T_e_to_rgb = np.linalg.inv(T_cam_to_e)
-
-        H_rgb, W_rgb = rgb_data.shape[1:3]
-
-    # GT
-    with h5py.File(depth_path, 'r') as f:
-        depth_ts = f['ts'][:].astype(np.float64)
-        depth_maps = f['depth'][:]
-
-    poses_dict = load_pose_gt(pose_path)
-
-    metadata = {"sequence": seq_name, "views": []}
-
-    print(f"🚀 处理 {seq_name} | RGB 帧数: {len(rgb_ts)} | 使用 /ovc/ts_map_prophesee_left_t 严格对齐")
-
-    total_events = len(events['x'])
-    prev_end = 0
-
-    for i in tqdm(range(len(rgb_ts)), desc=seq_name):
-        ts = rgb_ts[i]
-
-        rgb = cv2.cvtColor(rgb_data[i], cv2.COLOR_BGR2RGB)
-        cv2.imwrite(str(out_scene / "rgb" / f"rgb_{i:06d}.png"), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-
-        # Event：使用官方 ts_map 索引
-        start_idx = prev_end
-        end_idx = ts_map_left[i]
-        end_idx = min(end_idx, total_events)
-
-        if end_idx <= start_idx:
-            event_img = np.zeros((H_e, W_e, 3), dtype=np.uint8)
-        else:
-            xs = events['x'][start_idx:end_idx]
-            ys = events['y'][start_idx:end_idx]
-            ps = events['p'][start_idx:end_idx]
-            event_img = aggregate_events_xy_p(xs, ys, ps, H_e, W_e)
-
-        cv2.imwrite(str(out_scene / "event" / f"event_{i:06d}.png"), event_img)
-
-        prev_end = end_idx
-
-        # Depth
-        idx_d = np.argmin(np.abs(depth_ts - ts))
-        depth_e = depth_maps[idx_d].astype(np.float32)
-        depth_rgb = project_depth_to_rgb(depth_e, K_e, T_e_to_rgb, H_rgb, W_rgb)
-        cv2.imwrite(str(out_scene / "depth" / f"depth_{i:06d}.png"), (depth_rgb * 1000).astype(np.uint16))
-
-        # Pose
-        closest_ts = get_closest_key(poses_dict, ts)
-        pose = poses_dict[closest_ts]
-        np.savetxt(out_scene / "pose" / f"pose_{i:06d}.txt", pose)
-
-        metadata["views"].append({
-            "idx": i,
-            "ts": float(ts),
-            "rgb": f"rgb_{i:06d}.png",
-            "event": f"event_{i:06d}.png",
-            "depth": f"depth_{i:06d}.png",
-            "pose": f"pose_{i:06d}.txt"
-        })
-
-        if i % 1000 == 0 or i == len(rgb_ts)-1:
-            events_this = end_idx - start_idx
-            print(f"  帧 {i:06d} | ts={ts:.6f} | events={events_this} | idx={end_idx}/{total_events}")
-
-    calib_info = {
-        "K_event": K_e.tolist(),
-        "T_e_to_rgb": T_e_to_rgb.tolist(),
-        "H_rgb": int(H_rgb), "W_rgb": int(W_rgb),
-        "H_event": int(H_e), "W_event": int(W_e)
-    }
-    with open(out_scene / "metadata.json", "w") as f:
-        json.dump({"sequence": seq_name, "calib": calib_info, "views": metadata["views"]}, f, indent=2)
-
-    print(f"✅ {seq_name} 完成！输出帧数 = {len(rgb_ts)}")
+def main():
+    parser = argparse.ArgumentParser(description="Preprocess M3ED dataset")
+    parser.add_argument("--src", type=str, required=True,
+                        help="M3ED root dir (contains sequence folders)")
+    parser.add_argument("--dst", type=str, required=True,
+                        help="Output root dir")
+    parser.add_argument("--name", type=str, default="",
+                        help="Single sequence name (e.g. falcon_forest_into_forest_1). "
+                             "If empty, process all sequences under --src.")
+    parser.add_argument("--event_window_ms", type=float, default=50.0,
+                        help="Event accumulation window in ms (default: 50ms)")
+    args = parser.parse_args()
+    run(args)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--seq", nargs="+", default=["car_urban_day_city_hall"])
-    parser.add_argument("--data_root", default="/Users/cheungbh/Documents/PhDCode/EStreamVGGT/data")
-    parser.add_argument("--out_root", default="/Users/cheungbh/Documents/PhDCode/EStreamVGGT/data/processed")
-    args = parser.parse_args()
-
-    Path(args.out_root).mkdir(parents=True, exist_ok=True)
-    for s in args.seq:
-        preprocess_m3ed(s, args.data_root, args.out_root)
+    main()
