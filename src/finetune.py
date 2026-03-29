@@ -1164,10 +1164,26 @@ def test_one_epoch(
             )
             x = torch.cat([Rp, t[:, :, None]], dim=2)
         elif x.ndim == 2 and x.shape[-1] == 9:
+            # VGGT pose encoding: [t(3), q(4), fov(2)], q format is [x, y, z, w]
             B = x.shape[0]
-            R = x.view(B, 3, 3)
-            t0 = torch.zeros((B, 3, 1), device=x.device, dtype=x.dtype)
-            x = torch.cat([R, t0], dim=2)
+            t = x[:, :3]
+            q = x[:, 3:7]
+            qx, qy, qz, qw = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+            R11 = 1 - 2 * (qy * qy + qz * qz)
+            R12 = 2 * (qx * qy - qz * qw)
+            R13 = 2 * (qx * qz + qy * qw)
+            R21 = 2 * (qx * qy + qz * qw)
+            R22 = 1 - 2 * (qx * qx + qz * qz)
+            R23 = 2 * (qy * qz - qx * qw)
+            R31 = 2 * (qx * qz - qy * qw)
+            R32 = 2 * (qy * qz + qx * qw)
+            R33 = 1 - 2 * (qx * qx + qy * qy)
+            Rmat = torch.stack([
+                torch.stack([R11, R12, R13], dim=-1),
+                torch.stack([R21, R22, R23], dim=-1),
+                torch.stack([R31, R32, R33], dim=-1),
+            ], dim=1)  # [B, 3, 3]
+            x = torch.cat([Rmat, t[:, :, None]], dim=2)  # [B, 3, 4]
         elif x.ndim == 2 and x.shape == torch.Size([3, 4]):
             x = x.unsqueeze(0)
         elif x.ndim == 2 and x.shape == torch.Size([4, 4]):
