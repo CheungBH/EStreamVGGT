@@ -104,9 +104,8 @@ def process_sequence(seq_dir, dst_dir):
             # 2. Depth
             depth = depths[i].astype(np.float32)   # (720, 1280)
             # M3ED depth is in meters, clip to valid range
-            depth = np.clip(depth, 0.1, 200.0)
-            # Zero out invalid (original 0 values)
-            depth[depths[i] <= 0] = 0.0
+            depth[depth <= 0] = 0.0  # 先过滤无效
+            depth[depth > 80.0] = 0.0  # 过滤超远距离，与其他数据集对齐
 
             # 3. RGB (nearest frame)
             rgb_idx = nearest_rgb[i]
