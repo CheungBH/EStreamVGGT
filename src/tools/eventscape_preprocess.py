@@ -61,8 +61,8 @@ def run(args):
 
         # In this format, events are already rendered as images (Voxel Grid or similar)
         event_files = sorted(glob.glob(osp.join(events_dir, "*.png")))
-        depth_files = sorted(glob.glob(osp.join(depth_dir, "*.png"))) 
-            
+        depth_files = sorted(glob.glob(osp.join(depth_dir, "*.npy")))
+
         # Check if poses exist in this format
         # RAM_Net EventScape saves pose as 'position.txt' (x, y, z) and 'orientation.txt' (pitch, yaw, roll)
         vehicle_data_dir = osp.join(seq_path, "vehicle_data")
@@ -172,19 +172,10 @@ def run(args):
                      cam2world=cam2world)
                      
             # 4. Depth
-            d_file = depth_files[i]
-            d_img = cv2.imread(d_file, cv2.IMREAD_UNCHANGED)
-            if d_img.ndim == 3: # RGB encoded depth
-                R_ch = d_img[:,:,2].astype(np.float32)
-                G_ch = d_img[:,:,1].astype(np.float32)
-                B_ch = d_img[:,:,0].astype(np.float32)
-                normalized = (R_ch + G_ch * 256.0 + B_ch * 256.0 * 256.0) / (256.0 * 256.0 * 256.0 - 1.0)
-                depth_map = normalized * 1000.0 # Assuming max distance 1000m
-            else:
-                depth_map = d_img.astype(np.float32)
-                
+            npy_file = depth_files[i].replace(".png", ".npy")
+            depth_map = np.load(npy_file).astype(np.float32)
             cv2.imwrite(osp.join(seq_dst, f"{frame_id}.exr"), depth_map)
-            
+
             if i > 0 and i % 100 == 0:
                 print(f"  Processed {i}/{num_frames} frames")
                 
