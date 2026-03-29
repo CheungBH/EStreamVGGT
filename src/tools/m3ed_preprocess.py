@@ -25,7 +25,7 @@ def aggregate_events(xs, ys, ps, H, W):
     return img
 
 
-def process_sequence(seq_dir, dst_dir, event_window_us=50000):
+def process_sequence(seq_dir, dst_dir):
     seq_name = osp.basename(seq_dir)
     print(f"\n=== Processing: {seq_name} ===")
 
@@ -115,14 +115,17 @@ def process_sequence(seq_dir, dst_dir, event_window_us=50000):
             rgb_resized = cv2.resize(rgb, (W_EVT, H_EVT), interpolation=cv2.INTER_LINEAR)
 
             # 4. Events (window: [ts[i-1], ts[i]) or [ts[i], ts[i]+window])
+            # 事件窗口：始终用相邻两帧的真实时间戳
             if i == 0:
-                t_start_us = depth_ts[0] - event_window_us
-                t_end_us   = depth_ts[0]
+                if N > 1:
+                    frame_interval = int(depth_ts[1] - depth_ts[0])
+                else:
+                    frame_interval = 50000
+                t_start_us = max(0, int(depth_ts[0]) - frame_interval)
+                t_end_us   = int(depth_ts[0])
             else:
-                t_start_us = depth_ts[i - 1]
-                t_end_us   = depth_ts[i]
-
-            t_start_us = max(t_start_us, 0)
+                t_start_us = int(depth_ts[i - 1])
+                t_end_us   = int(depth_ts[i])
 
             # Use ms_map_idx for efficient slicing
             t_start_ms = int(t_start_us // 1000)
@@ -171,8 +174,7 @@ def run(args):
 
     print(f"Found {len(seq_dirs)} sequence(s)")
     for seq_dir in seq_dirs:
-        process_sequence(str(seq_dir), args.dst,
-                         event_window_us=int(args.event_window_ms * 1000))
+        process_sequence(str(seq_dir), args.dst)
 
     print("\nAll done.")
 
@@ -186,8 +188,6 @@ def main():
     parser.add_argument("--name", type=str, default="",
                         help="Single sequence name (e.g. falcon_forest_into_forest_1). "
                              "If empty, process all sequences under --src.")
-    parser.add_argument("--event_window_ms", type=float, default=50.0,
-                        help="Event accumulation window in ms (default: 50ms)")
     args = parser.parse_args()
     run(args)
 
