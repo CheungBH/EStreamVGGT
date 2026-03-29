@@ -36,6 +36,7 @@ def process_subsequence(args, base_name, sub_name):
 
     # ====================== 路径 ======================
     img_dir = DATA_ROOT / "RGB_event/train" / seq_name / "images/left/distorted"
+    timestamp_file = DATA_ROOT / "RGB_event/train" / seq_name / "images/timestamps.txt"
     event_h5 = DATA_ROOT / "RGB_event/train" / seq_name / "events/left/events.h5"
     disp_dir = DATA_ROOT / "train_disparity" / seq_name / (
         "disparity/event" if args.use_event_view else "disparity/image")
@@ -81,7 +82,6 @@ def process_subsequence(args, base_name, sub_name):
         }
 
     # ====================== 读取时间戳 ======================
-    timestamp_file = img_dir.parent / "timestamps.txt"
     with open(timestamp_file, 'r') as f:
         img_timestamps_us = [int(line.strip()) for line in f if line.strip()]
 
