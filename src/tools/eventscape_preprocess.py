@@ -174,6 +174,8 @@ def run(args):
             # 4. Depth
             npy_file = depth_files[i].replace(".png", ".npy")
             depth_map = np.load(npy_file).astype(np.float32)
+            depth_map[depth_map >= 999.0] = 0.0  # 过滤 CARLA 无效值
+            depth_map[depth_map > 80.0] = 0.0  # 过滤超远距离
             cv2.imwrite(osp.join(seq_dst, f"{frame_id}.exr"), depth_map)
 
             if i > 0 and i % 100 == 0:
