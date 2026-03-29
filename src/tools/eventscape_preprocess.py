@@ -42,7 +42,7 @@ def run(args):
         #   events/frames/ (contains 0000.png, etc)
         
         rgb_dir = osp.join(seq_path, "rgb", "data")
-        depth_dir = osp.join(seq_path, "depth", "frames")
+        depth_dir = osp.join(seq_path, "depth", "data")
         events_dir = osp.join(seq_path, "events", "frames")
         
         rgb_files = sorted(glob.glob(osp.join(rgb_dir, "*.png")))
