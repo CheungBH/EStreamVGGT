@@ -86,7 +86,6 @@ def process_subsequence(args, base_name, sub_name):
         img_timestamps_us = [int(line.strip()) for line in f if line.strip()]
 
     t_prev_us = img_timestamps_us[0]
-    event_window_us = int(args.event_window_ms * 1000)
 
     # ====================== 读取 pose.bag ======================
     pose_dict = {}
@@ -114,28 +113,33 @@ def process_subsequence(args, base_name, sub_name):
         print(f"从 pose.bag 读取到 {len(pose_dict)} 条 pose")
 
     # ====================== 主循环 ======================
-
     for frame_idx, fid in enumerate(tqdm.tqdm(frame_ids, desc=seq_name)):
 
         if frame_idx + 1 < len(img_timestamps_us):
             t_curr_us = img_timestamps_us[frame_idx + 1]
         else:
-            t_curr_us = t_prev_us + event_window_us
+            # 最后一帧：用前一帧的间隔推算
+            if len(img_timestamps_us) >= 2:
+                t_curr_us = t_prev_us + (img_timestamps_us[-1] - img_timestamps_us[-2])
+            else:
+                t_curr_us = t_prev_us + 50000
 
         # Depth
         disp_path = disp_dir / f"{fid}.png"
         if not disp_path.exists():
+            t_prev_us = t_curr_us
             continue
 
         disp_u16 = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
         if disp_u16 is None:
+            t_prev_us = t_curr_us
             continue
 
-        # 4. Pose — 修复1: 改用 bisect_pos 避免覆盖外层 frame_idx
+        # Pose
         t_sec = t_curr_us / 1e6
         pose = None
         if pose_times:
-            bisect_pos = bisect.bisect_left(pose_times, t_sec)  # ← 修复1: 原来叫 idx，与外层冲突
+            bisect_pos = bisect.bisect_left(pose_times, t_sec)
             if bisect_pos == 0:
                 best_t = pose_times[0]
             elif bisect_pos == len(pose_times):
@@ -146,7 +150,6 @@ def process_subsequence(args, base_name, sub_name):
                 best_t = t1 if abs(t1 - t_sec) < abs(t2 - t_sec) else t2
             pose = pose_dict[best_t]
 
-        # 修复2: pose 为 None 时跳过，避免存入无效数据
         if pose is None:
             print(f"警告: {fid} 没有对应 pose，跳过")
             t_prev_us = t_curr_us
@@ -156,22 +159,24 @@ def process_subsequence(args, base_name, sub_name):
         rgb = cv2.imread(str(img_dir / f"{fid}.png"))
         cv2.imwrite(osp.join(seq_dst, f"{fid}.png"), rgb)
 
-        # 2. Depth
+        # 2. Depth — 修复: 不用 clip，保留稀疏有效区域，无效像素设为 0
         disp_f = disp_u16.astype(np.float32) / 256.0
-        valid = disp_u16 > 0
+        valid_mask = disp_u16 > 0
         depth = cv2.reprojectImageTo3D(disp_f, Q)[..., 2]
-        depth[~valid] = 0
-        depth = np.clip(depth, 0.1, 80.0)
+        depth[~valid_mask] = 0.0   # 无效视差 → 0
+        depth[depth < 0.1] = 0.0  # 过滤负数和极近点
+        depth[depth > 80.0] = 0.0  # 过滤超远距离
         cv2.imwrite(osp.join(seq_dst, f"{fid}.exr"), depth.astype(np.float32))
 
         # 3. Event
         mask = (events['t'] >= t_prev_us) & (events['t'] < t_curr_us)
-        ev_img = aggregate_events_xy_p(events['x'][mask], events['y'][mask], events['p'][mask], H, W)
+        ev_img = aggregate_events_xy_p(
+            events['x'][mask], events['y'][mask], events['p'][mask], H, W)
         cv2.imwrite(osp.join(seq_dst, f"{fid}_event.png"), ev_img)
 
         t_prev_us = t_curr_us
 
-        # 5. 保存
+        # 4. 保存 camera params
         np.savez(osp.join(seq_dst, f"{fid}.npz"),
                  intrinsics=K,
                  cam2world=pose)
@@ -206,7 +211,6 @@ def main():
     parser.add_argument("--src", type=str, required=True, help="DSEC 根目录")
     parser.add_argument("--dst", type=str, required=True, help="输出根目录")
     parser.add_argument("--name", type=str, required=True, help="基序列名，例如 interlaken_00")
-    parser.add_argument("--event_window_ms", type=float, default=50.0)
     parser.add_argument("--use_event_view", action="store_true")
     args = parser.parse_args()
     run(args)
