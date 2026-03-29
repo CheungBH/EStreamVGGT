@@ -422,6 +422,8 @@ def train(args):
                     take(k)
                 for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
                     take(k)
+                for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2"):
+                    take(k)
                 for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
                     take(k)
                 for pfx in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d"):
@@ -439,6 +441,7 @@ def train(args):
                 order += [k for k in ("loss","pose_loss") if k in consolidated]
                 order += [k for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253") if k in consolidated]
                 order += [k for k in ("pose_rot_deg","pose_trans_err","pose_auc30") if k in consolidated]
+                order += [k for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2") if k in consolidated]
                 order += [k for k in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d") if k in consolidated]
                 order += [k for k in ("conf_mean","track_conf_mean","track_vis_ratio") if k in consolidated]
                 if not os.path.exists(tpath):
@@ -773,10 +776,14 @@ def plot_category_dashboards(output_dir):
             "pose_auc30_avg","pose_auc30_med",
         ],
         "geometry": [
-            "pts3d_acc_mean", "pts3d_acc_med",
-            "pts3d_comp_mean", "pts3d_comp_med",
-            "pts3d_nc_mean", "pts3d_nc_med",
-            "pts3d_chamfer_l1", "pts3d_chamfer_l2",
+            "pts3d_acc_mean_avg", "pts3d_acc_med_avg",
+            "pts3d_comp_mean_avg", "pts3d_comp_med_avg",
+            "pts3d_nc_mean_avg", "pts3d_nc_med_avg",
+            "pts3d_chamfer_l1_avg", "pts3d_chamfer_l2_avg",
+            "pts3d_acc_mean_med", "pts3d_acc_med_med",
+            "pts3d_comp_mean_med", "pts3d_comp_med_med",
+            "pts3d_nc_mean_med", "pts3d_nc_med_med",
+            "pts3d_chamfer_l1_med", "pts3d_chamfer_l2_med",
         ],
         "confidence": [
             "conf_mean_avg","conf_mean_med",
