@@ -776,14 +776,10 @@ def plot_category_dashboards(output_dir):
             "pose_auc30_avg","pose_auc30_med",
         ],
         "geometry": [
-            "pts3d_acc_mean_avg", "pts3d_acc_med_avg",
-            "pts3d_comp_mean_avg", "pts3d_comp_med_avg",
-            "pts3d_nc_mean_avg", "pts3d_nc_med_avg",
-            "pts3d_chamfer_l1_avg", "pts3d_chamfer_l2_avg",
-            "pts3d_acc_mean_med", "pts3d_acc_med_med",
-            "pts3d_comp_mean_med", "pts3d_comp_med_med",
-            "pts3d_nc_mean_med", "pts3d_nc_med_med",
-            "pts3d_chamfer_l1_med", "pts3d_chamfer_l2_med",
+            "pts3d_acc_mean", "pts3d_acc_med",
+            "pts3d_comp_mean", "pts3d_comp_med",
+            "pts3d_nc_mean", "pts3d_nc_med",
+            "pts3d_chamfer_l1", "pts3d_chamfer_l2",
         ],
         "confidence": [
             "conf_mean_avg","conf_mean_med",
