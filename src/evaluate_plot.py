@@ -234,6 +234,10 @@ def main():
         # track
         for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
             take(k)
+        # geometry
+        for k in (stats or {}).keys():
+            if k.startswith("pts3d_") or k.startswith("acc_") or k.startswith("comp_") or k.startswith("nc_") or k.startswith("chamfer_"):
+                take(k)
         # pts3d avg across views
         def avg_prefix(pfx):
             vals = [v for k, v in (stats or {}).items() if k.startswith(pfx + "/")]
@@ -263,7 +267,7 @@ def main():
         order += sel(["loss","pose_loss"])
         order += sel(["depth_"])
         order += sel(["pose_"])
-        order += sel(["pts3d_","Regr3DPose_"])
+        order += sel(["pts3d_","Regr3DPose_", "acc_", "comp_", "nc_", "chamfer_"])
         order += sel(["track_conf_mean","track_vis_ratio","conf_mean"])
         if not os.path.exists(tpath):
             with open(tpath, "w", encoding="utf-8") as tf:
