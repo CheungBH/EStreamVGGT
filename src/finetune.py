@@ -1297,6 +1297,8 @@ def test_one_epoch(
                 depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
                 valid = m & (g > depth_min) & (pd > depth_min)
                 if valid.any():
+                    scale = g.masked_select(valid).median() / pd.masked_select(valid).median()
+                    pd = pd * scale
                     rel = ((pd - g).abs() / g.clamp_min(depth_min)).masked_select(valid).mean().item()
                     rmse = torch.sqrt(((pd - g).square()).masked_select(valid).mean()).item()
                     pd_safe = pd.clamp_min(depth_min)
