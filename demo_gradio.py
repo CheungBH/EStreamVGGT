@@ -17,6 +17,7 @@ import glob
 import gc
 import time
 
+
 sys.path.append("src/")
 from visual_util import predictions_to_glb
 from streamvggt.models.streamvggt import StreamVGGT
