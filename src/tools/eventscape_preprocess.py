@@ -94,7 +94,7 @@ def run(args):
 
         # ── Paths ────────────────────────────────────────────────────────────
         rgb_dir    = osp.join(seq_path, "rgb",    "data")
-        depth_dir  = osp.join(seq_path, "depth",  "frames")
+        depth_dir  = osp.join(seq_path, "depth",  "data")
         events_dir = osp.join(seq_path, "events", "frames")
 
         vehicle_data_dir = osp.join(seq_path, "vehicle_data")
