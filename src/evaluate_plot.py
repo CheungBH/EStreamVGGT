@@ -221,8 +221,13 @@ def main():
         prefix = str(getattr(cfg, "prefix", "eval"))
         consolidated = {}
         def take(key):
-            if key in (stats or {}):
-                consolidated[key] = float(stats[key])
+            base = key
+            if key + "_avg" in (stats or {}):
+                consolidated[base] = float(stats[key + "_avg"])
+            elif key + "_med" in (stats or {}):
+                consolidated[base] = float(stats[key + "_med"])
+            elif base in (stats or {}):
+                consolidated[base] = float(stats[base])
         # loss
         take("loss"); take("pose_loss")
         # depth
@@ -231,20 +236,18 @@ def main():
         # pose
         for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
             take(k)
+        # geometry
+        for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"):
+            take(k)
         # track
         for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
             take(k)
-        # geometry
-        for k in (stats or {}).keys():
-            if k.startswith("pts3d_") or k.startswith("acc_") or k.startswith("comp_") or k.startswith("nc_") or k.startswith("chamfer_"):
-                take(k)
         # pts3d avg across views
-        def avg_prefix(pfx):
+        for pfx in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d"):
             vals = [v for k, v in (stats or {}).items() if k.startswith(pfx + "/")]
             if vals:
                 consolidated[pfx] = float(np.mean(vals))
-        avg_prefix("Regr3DPose_pts3d")
-        avg_prefix("Regr3DPose_ScaleInv_pts3d")
+        
         # write metric.json as aggregated object
         jpath = os.path.join(out_eval, "metric.json")
         ep_key = f"Epoch{int(eidx)}"
@@ -255,12 +258,13 @@ def main():
                     obj = json.load(rf)
             except Exception:
                 obj = {}
-        obj[ep_key] = {name: float(val) for name, val in (stats or {}).items()}
+        obj[ep_key] = {name: float(val) for name, val in consolidated.items()}
         with open(jpath, "w", encoding="utf-8") as wf:
             json.dump(obj, wf, indent=2, ensure_ascii=False)
+        
         # write metric.txt as space-separated table (header + rows)
         tpath = os.path.join(out_eval, "metric.txt")
-        keys = sorted(list((stats or {}).keys()))
+        keys = sorted(list(consolidated.keys()))
         def sel(prefixes):
             return [k for k in keys if any(k.startswith(p) for p in prefixes)]
         order = []
@@ -273,7 +277,7 @@ def main():
             with open(tpath, "w", encoding="utf-8") as tf:
                 tf.write("epoch " + " ".join(order) + "\n")
         with open(tpath, "a", encoding="utf-8") as tf:
-            vals = [str(int(eidx))] + [f"{float((stats or {}).get(k, float('nan'))):.6f}" for k in order]
+            vals = [str(int(eidx))] + [f"{float(consolidated.get(k, float('nan'))):.6f}" for k in order]
             tf.write(" ".join(vals) + "\n")
         dt = time.time() - t0
         print(f"[{idx}/{total}] done {os.path.basename(path)} in {dt:.1f}s (load {t1 - t0:.1f}s, eval {dt - (t1 - t0):.1f}s)")

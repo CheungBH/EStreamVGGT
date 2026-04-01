@@ -422,7 +422,7 @@ def train(args):
                     take(k)
                 for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
                     take(k)
-                for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2"):
+                for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"):
                     take(k)
                 for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
                     take(k)
@@ -441,7 +441,7 @@ def train(args):
                 order += [k for k in ("loss","pose_loss") if k in consolidated]
                 order += [k for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253") if k in consolidated]
                 order += [k for k in ("pose_rot_deg","pose_trans_err","pose_auc30") if k in consolidated]
-                order += [k for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2") if k in consolidated]
+                order += [k for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2") if k in consolidated]
                 order += [k for k in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d") if k in consolidated]
                 order += [k for k in ("conf_mean","track_conf_mean","track_vis_ratio") if k in consolidated]
                 if not os.path.exists(tpath):
@@ -764,32 +764,30 @@ def plot_category_dashboards(output_dir):
     prefixes = sorted(list(set(prefixes)))
     cat_map = {
         "depth_error": [
-            "depth_absrel_avg", "depth_absrel_med",
-            "depth_delta_125_avg", "depth_delta_125_med",
-            "depth_rmse_avg", "depth_rmse_med",
-            "depth_log_rmse_avg", "depth_log_rmse_med",
-            "depth_si_rmse_avg", "depth_si_rmse_med",
+            "depth_absrel", "depth_delta_125", "depth_rmse", "depth_log_rmse", "depth_si_rmse",
         ],
         "pose": [
-            "pose_rot_deg_avg","pose_rot_deg_med",
-            "pose_trans_err_avg","pose_trans_err_med",
-            "pose_auc30_avg","pose_auc30_med",
+            "pose_rot_deg","pose_trans_err","pose_auc30",
         ],
         "geometry": [
             "pts3d_acc_mean", "pts3d_acc_med",
             "pts3d_comp_mean", "pts3d_comp_med",
             "pts3d_nc_mean", "pts3d_nc_med",
             "pts3d_chamfer_l1", "pts3d_chamfer_l2",
+            "acc_mean", "acc_med",
+            "comp_mean", "comp_med",
+            "nc_mean", "nc_med",
+            "chamfer_l1", "chamfer_l2",
         ],
         "confidence": [
-            "conf_mean_avg","conf_mean_med",
+            "conf_mean",
         ],
         "track": [
-            "track_conf_mean_avg","track_conf_mean_med",
-            "track_vis_ratio_avg","track_vis_ratio_med",
+            "track_conf_mean",
+            "track_vis_ratio",
         ],
         "loss": [
-            "loss_avg", "loss_med", "pose_loss_avg", "pose_loss_med",
+            "loss", "pose_loss",
         ],
     }
     outdir = os.path.join(output_dir, "visualize", "metrics_dashboards")
