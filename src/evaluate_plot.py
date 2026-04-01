@@ -2,7 +2,6 @@ import os
 import re
 import json
 import argparse
-from typing import Any
 import numpy as np
 import random
 import torch
@@ -272,7 +271,7 @@ def main():
         order += sel(["loss","pose_loss"])
         order += sel(["depth_"])
         order += sel(["pose_"])
-        order += sel(["pts3d_","Regr3DPose_", "acc_", "comp_", "nc_", "chamfer_"])
+        order += sel(["pts3d_", "Regr3DPose_", "acc_", "comp_", "nc_", "chamfer_"])
         order += sel(["track_conf_mean","track_vis_ratio","conf_mean"])
         if not os.path.exists(tpath):
             with open(tpath, "w", encoding="utf-8") as tf:
