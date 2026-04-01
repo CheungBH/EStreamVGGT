@@ -214,6 +214,7 @@ def plot_category_dashboards(output_dir):
                 if k != "epoch":
                     prefixes.append(k)
     prefixes = sorted(list(set(prefixes)))
+    # To ensure backward compatibility with older logs, we also build dynamically
     def build_cat_map(prefix):
         keys = set()
         for obj in data:
@@ -224,55 +225,48 @@ def plot_category_dashboards(output_dir):
                 vals = obj.get(prefix, {})
                 if isinstance(vals, dict):
                     keys |= set(vals.keys())
-        depth = sorted([k for k in keys if k.startswith("depth_")])
-        pose = sorted([k for k in keys if k.startswith("pose_") or k.startswith("Regr3DPose")])
-        geometry = sorted([k for k in keys if k.startswith("pts3d_")])
-        confidence = sorted([k for k in keys if "conf" in k and "track" not in k])
-        track = sorted([k for k in keys if "track" in k or "vis" in k])
-        loss = sorted([k for k in keys if k.endswith("loss_avg") or k.endswith("loss_med") or k.startswith("loss_") or k in ("loss_avg","loss_med","pose_loss_avg","pose_loss_med")])
-        # fallbacks to paper subset if empty
-        if not depth:
-            depth = [
-                "depth_absrel",
-                "depth_delta_125",
-                "depth_rmse",
-                "depth_log_rmse",
-                "depth_si_rmse",
-            ]
-        if not pose:
-            pose = ["pose_rot_deg","pose_trans_err","pose_auc30"]
-        if not geometry:
-            geometry = [
-                "pts3d_acc_mean", "pts3d_acc_med",
-                "pts3d_comp_mean", "pts3d_comp_med",
-                "pts3d_nc_mean", "pts3d_nc_med",
-                "pts3d_chamfer_l1", "pts3d_chamfer_l2",
-                "acc_mean", "acc_med",
-                "comp_mean", "comp_med",
-                "nc_mean", "nc_med",
-                "chamfer_l1", "chamfer_l2"
-            ]
-        if not confidence:
-            confidence = [
-                "conf_mean",
-            ]
-        if not track:
-            track = [
-                "track_conf_mean",
-                "track_vis_ratio",
-            ]
-        if not loss:
-            loss = [
-                "loss", "pose_loss",
-            ]
-        return {
-            "depth_error": depth,
-            "pose": pose,
-            "geometry": geometry,
-            "confidence": confidence,
-            "track": track,
-            "loss": loss,
+        
+        # Hardcode the static map to guarantee ALL categories are always returned exactly the same way.
+        static_map = {
+            "depth_error": ["depth_absrel", "depth_delta_125", "depth_rmse", "depth_log_rmse", "depth_si_rmse"],
+            "pose": ["pose_rot_deg", "pose_trans_err", "pose_auc30"],
+            "geometry": ["pts3d_acc_mean", "pts3d_acc_med", "pts3d_comp_mean", "pts3d_comp_med", "pts3d_nc_mean", "pts3d_nc_med", "pts3d_chamfer_l1", "pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"],
+            "confidence": ["conf_mean"],
+            "track": ["track_conf_mean", "track_vis_ratio"],
+            "loss": ["loss", "pose_loss"]
         }
+        
+        # We only return keys that actually exist in the log (keys set), but we use static_map to classify them.
+        # This prevents empty graphs and ensures consistent categorization.
+        final_map = {}
+        for cat, possible_keys in static_map.items():
+            # Match exact names OR names with _avg / _med to support all legacy/new logs
+            matched = []
+            for pk in possible_keys:
+                if pk in keys:
+                    matched.append(pk)
+                elif pk + "_avg" in keys:
+                    matched.append(pk + "_avg")
+                elif pk + "_med" in keys:
+                    matched.append(pk + "_med")
+            
+            # Also catch any dynamically discovered keys that match the prefix just in case we missed a new metric
+            if cat == "depth_error":
+                matched.extend([k for k in keys if k.startswith("depth_") and k not in matched])
+            elif cat == "pose":
+                matched.extend([k for k in keys if (k.startswith("pose_") or k.startswith("Regr3DPose")) and k not in matched])
+            elif cat == "geometry":
+                matched.extend([k for k in keys if (k.startswith("pts3d_") or k.startswith("acc_") or k.startswith("comp_") or k.startswith("nc_") or k.startswith("chamfer_")) and k not in matched])
+            elif cat == "confidence":
+                matched.extend([k for k in keys if "conf" in k and "track" not in k and k not in matched])
+            elif cat == "track":
+                matched.extend([k for k in keys if ("track" in k or "vis" in k) and k not in matched])
+            elif cat == "loss":
+                matched.extend([k for k in keys if (k.endswith("loss_avg") or k.endswith("loss_med") or k.startswith("loss_") or k in ("loss_avg","loss_med","pose_loss_avg","pose_loss_med")) and k not in matched])
+            
+            final_map[cat] = sorted(list(set(matched)))
+            
+        return final_map
     outdir = os.path.join(output_dir, "visualize", "metrics_dashboards")
     os.makedirs(outdir, exist_ok=True)
     def collect_series(prefix, keys):

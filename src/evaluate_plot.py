@@ -265,7 +265,7 @@ def main():
         
         # write metric.txt as space-separated table (header + rows)
         tpath = os.path.join(out_eval, "metric.txt")
-        keys = sorted(list[Any](consolidated.keys()))
+        keys = sorted(list(consolidated.keys()))
         def sel(prefixes):
             return [k for k in keys if any(k.startswith(p) for p in prefixes)]
         order = []
