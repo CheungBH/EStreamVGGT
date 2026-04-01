@@ -233,41 +233,37 @@ def plot_category_dashboards(output_dir):
         # fallbacks to paper subset if empty
         if not depth:
             depth = [
-                "depth_absrel_avg", "depth_absrel_med",
-                "depth_delta_125_avg", "depth_delta_125_med",
-                "depth_rmse_avg", "depth_rmse_med",
-                "depth_log_rmse_avg", "depth_log_rmse_med",
-                "depth_si_rmse_avg", "depth_si_rmse_med",
+                "depth_absrel",
+                "depth_delta_125",
+                "depth_rmse",
+                "depth_log_rmse",
+                "depth_si_rmse",
             ]
         if not pose:
-            pose = [
-                "pose_rot_deg_avg","pose_rot_deg_med",
-                "pose_trans_err_avg","pose_trans_err_med",
-                "pose_auc30_avg","pose_auc30_med",
-            ]
+            pose = ["pose_rot_deg","pose_trans_err","pose_auc30"]
         if not geometry:
             geometry = [
-                "pts3d_acc_mean_avg", "pts3d_acc_med_avg",
-                "pts3d_comp_mean_avg", "pts3d_comp_med_avg",
-                "pts3d_nc_mean_avg", "pts3d_nc_med_avg",
-                "pts3d_chamfer_l1_avg", "pts3d_chamfer_l2_avg",
-                "acc_mean_avg", "acc_med_avg",
-                "comp_mean_avg", "comp_med_avg",
-                "nc_mean_avg", "nc_med_avg",
-                "chamfer_l1_avg", "chamfer_l2_avg",
+                "pts3d_acc_mean", "pts3d_acc_med",
+                "pts3d_comp_mean", "pts3d_comp_med",
+                "pts3d_nc_mean", "pts3d_nc_med",
+                "pts3d_chamfer_l1", "pts3d_chamfer_l2",
+                "acc_mean", "acc_med",
+                "comp_mean", "comp_med",
+                "nc_mean", "nc_med",
+                "chamfer_l1", "chamfer_l2"
             ]
         if not confidence:
             confidence = [
-                "conf_mean_avg","conf_mean_med",
+                "conf_mean",
             ]
         if not track:
             track = [
-                "track_conf_mean_avg","track_conf_mean_med",
-                "track_vis_ratio_avg","track_vis_ratio_med",
+                "track_conf_mean",
+                "track_vis_ratio",
             ]
         if not loss:
             loss = [
-                "loss_avg", "loss_med", "pose_loss_avg", "pose_loss_med",
+                "loss", "pose_loss",
             ]
         return {
             "depth_error": depth,
