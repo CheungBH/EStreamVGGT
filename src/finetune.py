@@ -637,7 +637,7 @@ def save_and_plot_metrics(stats, out_eval, epoch, prefix="eval"):
         take(k)
     for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
         take(k)
-    for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"):
+    for k in ("pts3d_acc","pts3d_comp","pts3d_nc","pts3d_chamfer_l1","pts3d_chamfer_l2"):
         take(k)
     for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
         take(k)
@@ -933,12 +933,9 @@ def test_one_epoch(
         "pose_rot_deg": {},
         "pose_trans_err": {},
         # geometry
-        "acc_mean": {},
-        "acc_med": {},
-        "comp_mean": {},
-        "comp_med": {},
-        "nc_mean": {},
-        "nc_med": {},
+        "acc": {},
+        "comp": {},
+        "nc": {},
         "pts3d_chamfer_l1": {},
         "pts3d_chamfer_l2": {},
         # depth
@@ -1105,11 +1102,8 @@ def test_one_epoch(
         track_vis_ratios = []
         pose_auc30s = []
         acc_means = []
-        acc_meds = []
         comp_means = []
-        comp_meds = []
         nc_means = []
-        nc_meds = []
         for vi, view in enumerate(batch):
             pred_vi = preds[vi]
             # depth metrics
@@ -1249,13 +1243,9 @@ def test_one_epoch(
                 pts3d_chamfer_l1s.append(l1)
                 pts3d_chamfer_l2s.append(l2)
                 acc_means.append(d_pred_to_gt.mean().item())
-                acc_meds.append(d_pred_to_gt.median().item())
                 comp_means.append(d_gt_to_pred.mean().item())
-                comp_meds.append(d_gt_to_pred.median().item())
-                _agg("acc_mean", vi, d_pred_to_gt.mean().item())
-                _agg("acc_med", vi, d_pred_to_gt.median().item())
-                _agg("comp_mean", vi, d_gt_to_pred.mean().item())
-                _agg("comp_med", vi, d_gt_to_pred.median().item())
+                _agg("acc", vi, d_pred_to_gt.mean().item())
+                _agg("comp", vi, d_gt_to_pred.mean().item())
                 _agg("pts3d_chamfer_l1", vi, l1)
                 _agg("pts3d_chamfer_l2", vi, l2)
                 pr_grid = pr.reshape(B, H, W, 3)
@@ -1271,9 +1261,7 @@ def test_one_epoch(
                 cos = (n_pr * n_gt).sum(dim=-1).clamp(-1, 1)
                 cos = cos.reshape(-1)
                 nc_means.append(cos.mean().item())
-                nc_meds.append(cos.median().item())
-                _agg("nc_mean", vi, cos.mean().item())
-                _agg("nc_med", vi, cos.median().item())
+                _agg("nc", vi, cos.mean().item())
             pr_conf = pred_vi["conf"]
             conf_means.append(pr_conf.mean().item())
             _agg("conf_mean", vi, pr_conf.mean().item())
@@ -1300,12 +1288,9 @@ def test_one_epoch(
             pose_auc30=_avg(pose_auc30s),
             pts3d_chamfer_l1=_avg(pts3d_chamfer_l1s),
             pts3d_chamfer_l2=_avg(pts3d_chamfer_l2s),
-            pts3d_acc_mean=_avg(acc_means),
-            pts3d_acc_med=_avg(acc_meds),
-            pts3d_comp_mean=_avg(comp_means),
-            pts3d_comp_med=_avg(comp_meds),
-            pts3d_nc_mean=_avg(nc_means),
-            pts3d_nc_med=_avg(nc_meds),
+            pts3d_acc=_avg(acc_means),
+            pts3d_comp=_avg(comp_means),
+            pts3d_nc=_avg(nc_means),
             conf_mean=_avg(conf_means),
             track_conf_mean=_avg(track_conf_means),
             track_vis_ratio=_avg(track_vis_ratios),
@@ -1313,12 +1298,14 @@ def test_one_epoch(
 
     printer.info("Averaged stats: %s", metric_logger)
 
-    aggs = [("avg", "global_avg"), ("med", "median")]
-    results = {
-        f"{k}_{tag}": getattr(meter, attr)
-        for k, meter in metric_logger.meters.items()
-        for tag, attr in aggs
-    }
+    results = {}
+    for k, meter in metric_logger.meters.items():
+        if k.endswith("_mean") or k.endswith("_med"):
+            results[k] = getattr(meter, "global_avg")
+            continue
+        results[f"{k}_avg"] = getattr(meter, "global_avg")
+        if "loss" not in k:
+            results[f"{k}_med"] = getattr(meter, "median")
     if accelerator.is_main_process and hasattr(args, "output_dir"):
         mjson = os.path.join(args.output_dir, "metric.json")
         outp_new_json = os.path.join(args.output_dir, "metric_views.json")
@@ -1332,9 +1319,9 @@ def test_one_epoch(
             json.dump(metrics_obj, wf, indent=2, ensure_ascii=False)
         metrics = [
             "auc30", "pose_rot_deg", "pose_trans_err",
-            "acc_mean", "acc_med",
-            "comp_mean", "comp_med",
-            "nc_mean", "nc_med",
+            "acc",
+            "comp",
+            "nc",
             "pts3d_chamfer_l1", "pts3d_chamfer_l2",
             "depth_absrel", "depth_rmse", "depth_log_rmse", "depth_si_rmse",
             "depth_delta_125", "depth_delta_1252", "depth_delta_1253",
