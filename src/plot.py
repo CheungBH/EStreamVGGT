@@ -140,7 +140,7 @@ def plot_category_dashboards(output_dir):
             "pose": ["pose_rot_deg", "pose_trans_err", "pose_auc30"],
             "geometry": ["pts3d_acc", "pts3d_comp", "pts3d_nc", "chamfer_l1", "chamfer_l2", "Regr3DPose_pts3d", "Regr3DPose_ScaleInv_pts3d"],
             "track": ["track_conf_mean", "track_vis_ratio"],
-            "loss": ["loss", "pose_loss"]
+            "loss": ["loss", "pose_loss", "Lcamera", "Ldepth", "camera_loss", "depth_loss", "finetune_loss", "total"]
         }
         final_map = {}
         for cat, possible_keys in static_map.items():
@@ -148,9 +148,9 @@ def plot_category_dashboards(output_dir):
             for pk in possible_keys:
                 if pk in keys:
                     matched.append(pk)
-                elif pk + "_avg" in keys:
+                if pk + "_avg" in keys:
                     matched.append(pk + "_avg")
-                elif cat != "loss" and pk + "_med" in keys:
+                if cat != "loss" and pk + "_med" in keys:
                     matched.append(pk + "_med")
             if cat == "depth_error":
                 matched.extend([k for k in keys if k.startswith("depth_") and k not in matched])
@@ -161,7 +161,7 @@ def plot_category_dashboards(output_dir):
             elif cat == "track":
                 matched.extend([k for k in keys if ("track" in k or "vis" in k) and k not in matched])
             elif cat == "loss":
-                matched.extend([k for k in keys if (("loss" in k and not k.endswith("_med")) or k in ("total", "total_avg")) and k not in matched])
+                matched.extend([k for k in keys if (("loss" in k and not k.endswith("_med")) or k.startswith("Lcamera") or k.startswith("Ldepth") or k in ("total", "total_avg")) and k not in matched])
             final_map[cat] = sorted(list(set(matched)))
         return final_map
     outdir = os.path.join(output_dir, "visualize", "metrics_dashboards")
