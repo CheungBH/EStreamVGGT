@@ -817,7 +817,23 @@ class Regr3DPose(Criterion, MultiLoss):
             np.arange(len(ls_cross)).tolist()
         )
         details["pose_loss"] = self.compute_pose_loss(gt_poses, pr_poses, pose_masks)
-        details[f"{self_name}_loss"] = float(branch_loss)
+        if isinstance(branch_loss, torch.Tensor):
+            details[f"{self_name}_loss"] = float(
+                branch_loss.mean() if branch_loss.ndim > 0 else branch_loss
+            )
+        elif isinstance(branch_loss, (list, tuple)) and branch_loss and isinstance(branch_loss[0], (list, tuple)):
+            s = 0.0
+            for item in branch_loss:
+                if not item:
+                    continue
+                l = item[0]
+                if isinstance(l, torch.Tensor):
+                    s += float(l.mean() if l.numel() > 0 else 0.0)
+                else:
+                    s += float(l)
+            details[f"{self_name}_loss"] = float(s)
+        else:
+            details[f"{self_name}_loss"] = float(branch_loss)
         details[f"{self_name}_pose_loss"] = float(details["pose_loss"])
 
         return branch_loss, (details | monitoring)
