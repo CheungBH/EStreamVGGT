@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import argparse
 import numpy as np
 import random
@@ -8,7 +7,6 @@ import torch
 from types import SimpleNamespace
 from accelerate import Accelerator
 from accelerate.utils import set_seed
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
 import finetune as ft
@@ -26,79 +24,6 @@ def list_checkpoints(folder):
             items.append((int(m.group(1)), os.path.join(folder, n)))
     items.sort(key=lambda x: x[0])
     return items
-
-
-def plot_per_view(output_dir, modality, num_views, prefix):
-    mpath = os.path.join(output_dir, "metric_views.json")
-    if not os.path.exists(mpath):
-        return
-    def view_type(v, modality):
-        if modality == "rgb":
-            return "RGB"
-        if modality == "event":
-            return "event"
-        if modality == "rgb_first_event":
-            return "RGB" if v == 0 else "event"
-        if modality == "rgb_event_loop":
-            return "RGB" if (v % 2 == 0) else "event"
-        if modality == "rgb_empty":
-            return "RGB" if v == 0 else "white"
-        return "RGB"
-    epoch_data = {}
-    with open(mpath, "r", encoding="utf-8") as f:
-        try:
-            obj = json.load(f)
-        except Exception:
-            obj = {}
-    for ek, views in obj.items():
-        if ek.startswith("epoch") and isinstance(views, dict):
-            try:
-                ep = int(ek.replace("epoch", ""))
-            except Exception:
-                continue
-            epoch_data.setdefault(ep, {}).update(views)
-    if not epoch_data:
-        return
-    base = os.path.join(output_dir, "metrics_views")
-    os.makedirs(base, exist_ok=True)
-    # collect metric names
-    metrics = set()
-    for ep, views in epoch_data.items():
-        for vk, vals in views.items():
-            metrics |= set(vals.keys())
-    metrics = sorted(list(metrics))
-    # multi-line plots: one figure per metric, all views as separate lines
-    for m in metrics:
-        # build per-view series
-        series = {v: [] for v in range(1, num_views + 1)}
-        for ep in sorted(epoch_data.keys()):
-            views = epoch_data[ep]
-            for v in range(1, num_views + 1):
-                vk = f"view{v}"
-                if vk in views and m in views[vk]:
-                    series[v].append((ep, float(views[vk][m])))
-        # skip empty
-        if all(len(pts) == 0 for pts in series.values()):
-            continue
-        plt.figure(figsize=(8, 4))
-        for v, pts in series.items():
-            if not pts:
-                continue
-            pts = sorted(pts, key=lambda x: x[0])
-            xs = [p[0] for p in pts]
-            ys = [p[1] for p in pts]
-            lbl = f"v{v} ({view_type(v - 1, modality)})"
-            plt.plot(xs, ys, marker="o", linewidth=2, label=lbl)
-        plt.xlabel("epoch")
-        plt.ylabel(m)
-        plt.title(f"{prefix} - {m}")
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{m}.png"
-        plt.tight_layout()
-        plt.savefig(os.path.join(base, safe))
-        plt.close()
-
 
 from omegaconf import OmegaConf
 
@@ -205,7 +130,7 @@ def main():
                 raise
         print(f"[{idx}/{total}] loaded weights, start test_one_epoch")
         t1 = time.time()
-        stats = test_one_epoch(
+        test_one_epoch(
             model,
             None,
             criterion,
@@ -217,71 +142,9 @@ def main():
             log_writer=None,
             prefix=str(getattr(cfg, "prefix", "eval")),
         )
-        # consolidate averaged metrics and write both metric.json (one metric per line) and a tabular metric.txt
-        prefix = str(getattr(cfg, "prefix", "eval"))
-        consolidated = {}
-        def take(key):
-            base = key
-            if key + "_avg" in (stats or {}):
-                consolidated[base] = float(stats[key + "_avg"])
-            elif key + "_med" in (stats or {}):
-                consolidated[base] = float(stats[key + "_med"])
-            elif base in (stats or {}):
-                consolidated[base] = float(stats[base])
-        # loss
-        take("loss"); take("pose_loss")
-        # depth
-        for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253"):
-            take(k)
-        # pose
-        for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
-            take(k)
-        # geometry
-        for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"):
-            take(k)
-        # track
-        for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
-            take(k)
-        # pts3d avg across views
-        for pfx in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d"):
-            vals = [v for k, v in (stats or {}).items() if k.startswith(pfx + "/")]
-            if vals:
-                consolidated[pfx] = float(np.mean(vals))
-        
-        # write metric.json as aggregated object
-        jpath = os.path.join(out_eval, "metric.json")
-        ep_key = f"Epoch{int(eidx)}"
-        obj = {}
-        if os.path.exists(jpath):
-            try:
-                with open(jpath, "r", encoding="utf-8") as rf:
-                    obj = json.load(rf)
-            except Exception:
-                obj = {}
-        obj[ep_key] = {name: float(val) for name, val in consolidated.items()}
-        with open(jpath, "w", encoding="utf-8") as wf:
-            json.dump(obj, wf, indent=2, ensure_ascii=False)
-        
-        # write metric.txt as space-separated table (header + rows)
-        tpath = os.path.join(out_eval, "metric.txt")
-        keys = sorted(list(consolidated.keys()))
-        def sel(prefixes):
-            return [k for k in keys if any(k.startswith(p) for p in prefixes)]
-        order = []
-        order += sel(["loss","pose_loss"])
-        order += sel(["depth_"])
-        order += sel(["pose_"])
-        order += sel(["pts3d_", "Regr3DPose_", "acc_", "comp_", "nc_", "chamfer_"])
-        order += sel(["track_conf_mean","track_vis_ratio","conf_mean"])
-        if not os.path.exists(tpath):
-            with open(tpath, "w", encoding="utf-8") as tf:
-                tf.write("epoch " + " ".join(order) + "\n")
-        with open(tpath, "a", encoding="utf-8") as tf:
-            vals = [str(int(eidx))] + [f"{float(consolidated.get(k, float('nan'))):.6f}" for k in order]
-            tf.write(" ".join(vals) + "\n")
         dt = time.time() - t0
         print(f"[{idx}/{total}] done {os.path.basename(path)} in {dt:.1f}s (load {t1 - t0:.1f}s, eval {dt - (t1 - t0):.1f}s)")
-    plot_per_view(out_eval, str(getattr(cfg, "modality")), int(getattr(cfg, "num_test_views")), str(getattr(cfg, "prefix", "eval")))
+    ft.plot_view_metrics(out_eval, str(getattr(cfg, "modality")), int(getattr(cfg, "num_test_views")))
     ft.plot_category_dashboards(out_eval)
 
 
