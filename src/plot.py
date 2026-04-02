@@ -65,9 +65,19 @@ def plot_view_metrics(output_dir, modality, num_views):
         if modality == "rgb_empty":
             return "RGB" if v == 0 else "white"
         return "RGB"
-    wanted = ["auc30", "acc", "comp", "nc", "depth_absrel", "depth_delta_125"]
     with open(mpath, "r", encoding="utf-8") as f:
         obj = json.load(f)
+    wanted = sorted(
+        {
+            mk
+            for views in obj.values()
+            if isinstance(views, dict)
+            for vals in views.values()
+            if isinstance(vals, dict)
+            for mk, mv in vals.items()
+            if isinstance(mv, (int, float, np.number)) and "loss" not in mk.lower() and mk != "total"
+        }
+    )
 
     prefixes = ["eval"]
     base = os.path.join(output_dir, "visualize", "metrics_views")
@@ -90,38 +100,48 @@ def plot_view_metrics(output_dir, modality, num_views):
                     val = vals.get(m, None) if isinstance(vals, dict) else None
                     if isinstance(val, (int, float, np.number)):
                         series.setdefault(m, {}).setdefault(v, []).append((ep, float(val)))
+        cat_map = {"depth": [], "pose": [], "geometry": [], "track": []}
         for m in wanted:
-            by_view = series.get(m, {})
-            views_sorted = sorted(by_view.keys())
-            if not views_sorted:
-                plt.figure(figsize=(8, 4))
-                plt.xlabel("epoch")
-                plt.ylabel(m)
-                plt.title(f"{prefix} - {m}")
-                plt.grid(True, alpha=0.3)
-                plt.text(0.5, 0.5, "no data recorded for this metric", ha="center", va="center", transform=plt.gca().transAxes)
-                safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{m}.png"
-                plt.tight_layout()
-                plt.savefig(os.path.join(base, safe))
-                plt.close()
+            if m.startswith("depth_"):
+                cat_map["depth"].append(m)
+            elif m == "auc30" or m.startswith("pose_"):
+                cat_map["pose"].append(m)
+            elif m.startswith("pts3d_") or m in ("acc", "comp", "nc") or m.startswith("chamfer_"):
+                cat_map["geometry"].append(m)
+            elif "track" in m or "conf" in m or "vis" in m:
+                cat_map["track"].append(m)
+        for cname, metrics in cat_map.items():
+            metrics = [m for m in sorted(set(metrics)) if m in series]
+            if not metrics:
                 continue
-            plt.figure(figsize=(8, 4))
-            for v in views_sorted:
-                pts = sorted(by_view[v], key=lambda x: x[0])
-                xs = [p[0] for p in pts]
-                ys = [p[1] for p in pts]
-                typ = view_type(v - 1, modality)
-                lbl = f"v{v} ({typ})"
-                plt.plot(xs, ys, marker="o", linewidth=2, label=lbl)
-            plt.xlabel("epoch")
-            plt.ylabel(m)
-            plt.title(f"{prefix} - {m}")
-            plt.grid(True, alpha=0.3)
-            plt.legend()
-            safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{m}.png"
-            plt.tight_layout()
-            plt.savefig(os.path.join(base, safe))
-            plt.close()
+            n = len(metrics)
+            cols = 2 if n > 1 else 1
+            rows = int(np.ceil(n / cols))
+            fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 3.2 * rows), squeeze=False)
+            axes = axes.flatten()
+            for ax, m in zip(axes, metrics):
+                by_view = series.get(m, {})
+                views_sorted = sorted(by_view.keys())
+                for v in views_sorted:
+                    pts = sorted(by_view[v], key=lambda x: x[0])
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    typ = view_type(v - 1, modality)
+                    lbl = f"v{v} ({typ})"
+                    ax.plot(xs, ys, marker="o", linewidth=2, label=lbl)
+                ax.set_xlabel("epoch")
+                ax.set_ylabel(m)
+                ax.set_title(m)
+                ax.grid(True, alpha=0.3)
+                if views_sorted:
+                    ax.legend()
+            for j in range(len(metrics), len(axes)):
+                axes[j].axis("off")
+            fig.suptitle(f"{prefix} - {cname}")
+            fig.tight_layout()
+            safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{cname}.png"
+            fig.savefig(os.path.join(base, safe))
+            plt.close(fig)
 
 def plot_category_dashboards(output_dir):
     mpath = os.path.join(output_dir, "metric.json")
