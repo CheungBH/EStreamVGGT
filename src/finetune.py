@@ -50,6 +50,8 @@ import random
 import builtins
 import shutil
 import imageio.v2 as iio
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import plot
 

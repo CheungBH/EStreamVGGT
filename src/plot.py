@@ -1,6 +1,8 @@
 import os
 import json
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 def plot_all_metrics(output_dir):

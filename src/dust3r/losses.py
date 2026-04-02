@@ -812,12 +812,15 @@ class Regr3DPose(Criterion, MultiLoss):
 
         ls = ls_cross
         masks = masks_cross
+        branch_loss = Sum(*list(zip(ls, masks)))
         details["img_ids"] = (
             np.arange(len(ls_cross)).tolist()
         )
         details["pose_loss"] = self.compute_pose_loss(gt_poses, pr_poses, pose_masks)
+        details[f"{self_name}_loss"] = float(branch_loss)
+        details[f"{self_name}_pose_loss"] = float(details["pose_loss"])
 
-        return Sum(*list(zip(ls, masks))), (details | monitoring)
+        return branch_loss, (details | monitoring)
 
 
 class Regr3DPoseBatchList(Regr3DPose):
@@ -1022,6 +1025,7 @@ class ConfLoss(MultiLoss):
             )  # , details
         if "scale_loss" in details:
             final_loss = final_loss + details["scale_loss"]
+        details["ConfLoss_loss"] = float(final_loss)
         return final_loss, details
 
 
@@ -1359,6 +1363,7 @@ class FinetuneLoss(MultiLoss):
             Lcamera = self.cam_loss(cam_pr, cam_gt)
             total = total + Lcamera * 20
             details['Lcamera'] = float(Lcamera) * 20
+            details['camera_loss'] = float(Lcamera) * 20
 
         # ---------- Ldepth ----------
         if self.use_depth_loss:
@@ -1375,11 +1380,13 @@ class FinetuneLoss(MultiLoss):
                 Ldepth = torch.stack(depth_terms).mean()
                 total = total + Ldepth * 10
                 details['Ldepth'] = float(Ldepth) * 10
+                details['depth_loss'] = float(Ldepth) * 10
 
         if isinstance(total, float) and total == 0.0:
             total = torch.tensor(0.0, device=gts[0]['img'].device, requires_grad=True)
             
         details['total'] = float(total)
+        details['finetune_loss'] = float(total)
 
         return total, details
                          
