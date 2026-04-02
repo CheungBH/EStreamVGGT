@@ -52,8 +52,7 @@ def plot_all_metrics(output_dir):
 
 def plot_view_metrics(output_dir, modality, num_views):
     mpath = os.path.join(output_dir, "metric_views.json")
-    if not os.path.exists(mpath):
-        return
+
     def view_type(v, modality):
         if modality == "rgb":
             return "RGB"
@@ -81,11 +80,8 @@ def plot_view_metrics(output_dir, modality, num_views):
                 if isinstance(view_key, str) and view_key.startswith("view"):
                     view_ids.add(int(view_key.replace("view", "")))
 
-        if num_views and num_views > 0:
-            view_range = range(1, num_views + 1)
-        else:
-            vmax = max(view_ids) if view_ids else 0
-            view_range = range(1, vmax + 1)
+        view_range = range(1, num_views + 1)
+
         for epoch_key, views in obj.items():
             ep = int(epoch_key.replace("epoch", ""))
             for m in wanted:
