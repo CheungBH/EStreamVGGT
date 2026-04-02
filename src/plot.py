@@ -65,7 +65,7 @@ def plot_view_metrics(output_dir, modality, num_views):
         if modality == "rgb_empty":
             return "RGB" if v == 0 else "white"
         return "RGB"
-    wanted = ["auc30", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "depth_absrel", "depth_delta_125"]
+    wanted = ["auc30", "acc", "comp", "nc", "depth_absrel", "depth_delta_125"]
     with open(mpath, "r", encoding="utf-8") as f:
         obj = json.load(f)
 
@@ -122,29 +122,6 @@ def plot_view_metrics(output_dir, modality, num_views):
             plt.tight_layout()
             plt.savefig(os.path.join(base, safe))
             plt.close()
-        paired = [("acc_mean", "acc_med", "acc"), ("comp_mean", "comp_med", "comp"), ("nc_mean", "nc_med", "nc")]
-        for m_mean, m_med, name in paired:
-            if m_mean in series and m_med in series:
-                fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=False)
-                for ax, mkey, title_suffix in zip(axes, [m_mean, m_med], ["Mean", "Med"]):
-                    by_view = series[mkey]
-                    for v, pts in sorted(by_view.items()):
-                        pts = sorted(pts, key=lambda x: x[0])
-                        xs = [p[0] for p in pts]
-                        ys = [p[1] for p in pts]
-                        typ = view_type(v - 1, modality)
-                        lbl = f"v{v} ({typ})"
-                        ax.plot(xs, ys, marker="o", linewidth=2, label=lbl)
-                    ax.set_xlabel("epoch")
-                    ax.set_ylabel(mkey)
-                    ax.set_title(f"{title_suffix}")
-                    ax.grid(True, alpha=0.3)
-                    ax.legend()
-                fig.suptitle(f"{prefix} - {name} (Mean/Med)")
-                fig.tight_layout()
-                safe = f"{prefix.replace(' ', '_').replace('/', '_')}__{name}_pair.png"
-                fig.savefig(os.path.join(base, safe))
-                plt.close(fig)
 
 def plot_category_dashboards(output_dir):
     mpath = os.path.join(output_dir, "metric.json")
@@ -161,7 +138,7 @@ def plot_category_dashboards(output_dir):
         static_map = {
             "depth_error": ["depth_absrel", "depth_delta_125", "depth_rmse", "depth_log_rmse", "depth_si_rmse"],
             "pose": ["pose_rot_deg", "pose_trans_err", "pose_auc30"],
-            "geometry": ["acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"],
+            "geometry": ["pts3d_acc", "pts3d_comp", "pts3d_nc", "chamfer_l1", "chamfer_l2", "Regr3DPose_pts3d", "Regr3DPose_ScaleInv_pts3d"],
             "track": ["track_conf_mean", "track_vis_ratio"],
             "loss": ["loss", "pose_loss"]
         }
@@ -173,18 +150,18 @@ def plot_category_dashboards(output_dir):
                     matched.append(pk)
                 elif pk + "_avg" in keys:
                     matched.append(pk + "_avg")
-                elif pk + "_med" in keys:
+                elif cat != "loss" and pk + "_med" in keys:
                     matched.append(pk + "_med")
             if cat == "depth_error":
                 matched.extend([k for k in keys if k.startswith("depth_") and k not in matched])
             elif cat == "pose":
-                matched.extend([k for k in keys if (k.startswith("pose_") or k.startswith("Regr3DPose")) and k not in matched])
+                matched = [k for k in matched if ("/" not in k and "loss" not in k)]
             elif cat == "geometry":
-                matched.extend([k for k in keys if (k.startswith("pts3d_") or k.startswith("acc_") or k.startswith("comp_") or k.startswith("nc_") or k.startswith("chamfer_")) and k not in matched])
+                matched.extend([k for k in keys if k.startswith("pts3d_") and k not in matched])
             elif cat == "track":
                 matched.extend([k for k in keys if ("track" in k or "vis" in k) and k not in matched])
             elif cat == "loss":
-                matched.extend([k for k in keys if ("loss" in k or k in ("total", "total_avg", "total_med")) and k not in matched])
+                matched.extend([k for k in keys if (("loss" in k and not k.endswith("_med")) or k in ("total", "total_avg")) and k not in matched])
             final_map[cat] = sorted(list(set(matched)))
         return final_map
     outdir = os.path.join(output_dir, "visualize", "metrics_dashboards")

@@ -936,6 +936,8 @@ def test_one_epoch(
         "acc": {},
         "comp": {},
         "nc": {},
+        "Regr3DPose_pts3d": {},
+        "Regr3DPose_ScaleInv_pts3d": {},
         "pts3d_chamfer_l1": {},
         "pts3d_chamfer_l2": {},
         # depth
@@ -1079,6 +1081,23 @@ def test_one_epoch(
         metric_logger.update(loss=float(loss_value), **scalar_loss_details)
 
         preds = result.get("pred", [])
+        regr3d_view_pts = {}
+        regr3d_scaleinv_view_pts = {}
+        for k, v in scalar_loss_details.items():
+            if not isinstance(v, (int, float, np.number)):
+                continue
+            if k.startswith("Regr3DPose_pts3d/"):
+                try:
+                    vid = int(k.split("/", 1)[1])
+                    regr3d_view_pts[vid] = float(v)
+                except Exception:
+                    pass
+            elif k.startswith("Regr3DPose_ScaleInv_pts3d/"):
+                try:
+                    vid = int(k.split("/", 1)[1])
+                    regr3d_scaleinv_view_pts[vid] = float(v)
+                except Exception:
+                    pass
 
         # ── 关键修复：预计算第一帧 GT pose 的逆，用于归一化所有帧 ──────────
         gp0_3x4 = _pose_to_3x4(batch[0]["camera_pose"], device, model_dtype)  # [B,3,4]
@@ -1104,8 +1123,17 @@ def test_one_epoch(
         acc_means = []
         comp_means = []
         nc_means = []
+        regr3d_pts3d_avgs = []
+        regr3d_scaleinv_pts3d_avgs = []
         for vi, view in enumerate(batch):
             pred_vi = preds[vi]
+            vid = vi + 1
+            if vid in regr3d_view_pts:
+                regr3d_pts3d_avgs.append(regr3d_view_pts[vid])
+                _agg("Regr3DPose_pts3d", vi, regr3d_view_pts[vid])
+            if vid in regr3d_scaleinv_view_pts:
+                regr3d_scaleinv_pts3d_avgs.append(regr3d_scaleinv_view_pts[vid])
+                _agg("Regr3DPose_ScaleInv_pts3d", vi, regr3d_scaleinv_view_pts[vid])
             # depth metrics
             gt_depth = view["depthmap"]
             m_in = view.get("ray_mask", None)
@@ -1291,6 +1319,8 @@ def test_one_epoch(
             pts3d_acc=_avg(acc_means),
             pts3d_comp=_avg(comp_means),
             pts3d_nc=_avg(nc_means),
+            Regr3DPose_pts3d=_avg(regr3d_pts3d_avgs),
+            Regr3DPose_ScaleInv_pts3d=_avg(regr3d_scaleinv_pts3d_avgs),
             conf_mean=_avg(conf_means),
             track_conf_mean=_avg(track_conf_means),
             track_vis_ratio=_avg(track_vis_ratios),
@@ -1300,9 +1330,6 @@ def test_one_epoch(
 
     results = {}
     for k, meter in metric_logger.meters.items():
-        if k.endswith("_mean") or k.endswith("_med"):
-            results[k] = getattr(meter, "global_avg")
-            continue
         results[f"{k}_avg"] = getattr(meter, "global_avg")
         if "loss" not in k:
             results[f"{k}_med"] = getattr(meter, "median")
@@ -1322,6 +1349,7 @@ def test_one_epoch(
             "acc",
             "comp",
             "nc",
+            "Regr3DPose_pts3d", "Regr3DPose_ScaleInv_pts3d",
             "pts3d_chamfer_l1", "pts3d_chamfer_l2",
             "depth_absrel", "depth_rmse", "depth_log_rmse", "depth_si_rmse",
             "depth_delta_125", "depth_delta_1252", "depth_delta_1253",
