@@ -646,11 +646,7 @@ def save_and_plot_metrics(stats, out_eval, epoch, prefix="eval"):
                 obj = json.load(rf)
         except Exception:
             obj = {}
-    prefix_obj = obj.get(prefix, {})
-    if not isinstance(prefix_obj, dict):
-        prefix_obj = {}
-    prefix_obj[ep_key] = {name: float(val) for name, val in consolidated.items()}
-    obj[prefix] = prefix_obj
+    obj[ep_key] = {name: float(val) for name, val in consolidated.items()}
     with open(jpath, "w", encoding="utf-8") as wf:
         json.dump(obj, wf, indent=2, ensure_ascii=False)
     plot_category_dashboards(out_eval)
@@ -1314,11 +1310,7 @@ def test_one_epoch(
                     metrics_obj = json.load(rf)
             except Exception:
                 metrics_obj = {}
-        prefix_metrics = metrics_obj.get(prefix, {})
-        if not isinstance(prefix_metrics, dict):
-            prefix_metrics = {}
-        prefix_metrics[ep_key] = {name: float(val) for name, val in results.items()}
-        metrics_obj[prefix] = prefix_metrics
+        metrics_obj[ep_key] = {name: float(val) for name, val in results.items()}
         with open(mjson, "w", encoding="utf-8") as wf:
             json.dump(metrics_obj, wf, indent=2, ensure_ascii=False)
         metrics = [
@@ -1349,11 +1341,7 @@ def test_one_epoch(
                     mv_obj = json.load(rf)
             except Exception:
                 mv_obj = {}
-        prefix_views = mv_obj.get(prefix, {})
-        if not isinstance(prefix_views, dict):
-            prefix_views = {}
-        prefix_views[ep_key2] = views_obj
-        mv_obj[prefix] = prefix_views
+        mv_obj[ep_key2] = views_obj
         with open(outp_new_json, "w", encoding="utf-8") as wf:
             json.dump(mv_obj, wf, indent=2, ensure_ascii=False)
 

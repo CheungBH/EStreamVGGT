@@ -15,24 +15,20 @@ def plot_all_metrics(output_dir):
     if not isinstance(obj, dict):
         return
     series = {}
-    is_flat = any(k.startswith("Epoch") for k in obj.keys())
-    by_prefix = {"eval": obj} if is_flat else obj
-    for prefix, epochs in by_prefix.items():
-        if not isinstance(epochs, dict):
+    prefix = "eval"
+    for epoch_key, metrics in obj.items():
+        if not (isinstance(epoch_key, str) and epoch_key.startswith("Epoch")):
             continue
-        for epoch_key, metrics in epochs.items():
-            if not (isinstance(epoch_key, str) and epoch_key.startswith("Epoch")):
-                continue
-            if not isinstance(metrics, dict):
-                continue
-            try:
-                epoch = int(epoch_key.replace("Epoch", ""))
-            except Exception:
-                continue
-            for k, v in metrics.items():
-                if isinstance(v, (int, float, np.number)):
-                    key = f"{prefix}/{k}"
-                    series.setdefault(key, []).append((epoch, float(v)))
+        if not isinstance(metrics, dict):
+            continue
+        try:
+            epoch = int(epoch_key.replace("Epoch", ""))
+        except Exception:
+            continue
+        for k, v in metrics.items():
+            if isinstance(v, (int, float, np.number)):
+                key = f"{prefix}/{k}"
+                series.setdefault(key, []).append((epoch, float(v)))
     outdir = os.path.join(output_dir, "visualize", "metrics")
     os.makedirs(outdir, exist_ok=True)
     for key, pts in series.items():
@@ -76,18 +72,13 @@ def plot_view_metrics(output_dir, modality, num_views):
         obj = {}
     if not isinstance(obj, dict) or not obj:
         return
-    is_flat = any(k.startswith("epoch") for k in obj.keys())
-    by_prefix = {"eval": obj} if is_flat else obj
-    prefixes = sorted([k for k, v in by_prefix.items() if isinstance(v, dict)])
+    prefixes = ["eval"]
     base = os.path.join(output_dir, "visualize", "metrics_views")
     os.makedirs(base, exist_ok=True)
     for prefix in prefixes:
         series = {}
-        epochs = by_prefix.get(prefix, {})
-        if not isinstance(epochs, dict):
-            continue
         view_ids = set()
-        for epoch_key, views in epochs.items():
+        for epoch_key, views in obj.items():
             if not (isinstance(epoch_key, str) and epoch_key.startswith("epoch")):
                 continue
             if not isinstance(views, dict):
@@ -103,7 +94,7 @@ def plot_view_metrics(output_dir, modality, num_views):
         else:
             vmax = max(view_ids) if view_ids else 0
             view_range = range(1, vmax + 1)
-        for epoch_key, views in epochs.items():
+        for epoch_key, views in obj.items():
             if not (isinstance(epoch_key, str) and epoch_key.startswith("epoch")):
                 continue
             if not isinstance(views, dict):
@@ -186,22 +177,16 @@ def plot_category_dashboards(output_dir):
         obj = {}
     if not isinstance(obj, dict) or not obj:
         return
-    is_flat = any(k.startswith("Epoch") for k in obj.keys())
-    by_prefix = {"eval": obj} if is_flat else obj
-    prefixes = sorted([k for k, v in by_prefix.items() if isinstance(v, dict)])
+    prefixes = ["eval"]
     def build_cat_map(prefix):
         keys = set()
-        epochs = by_prefix.get(prefix, {})
-        if not isinstance(epochs, dict):
-            return {}
-        for vals in epochs.values():
+        for vals in obj.values():
             if isinstance(vals, dict):
                 keys |= set(vals.keys())
         static_map = {
             "depth_error": ["depth_absrel", "depth_delta_125", "depth_rmse", "depth_log_rmse", "depth_si_rmse"],
             "pose": ["pose_rot_deg", "pose_trans_err", "pose_auc30"],
             "geometry": ["pts3d_acc_mean", "pts3d_acc_med", "pts3d_comp_mean", "pts3d_comp_med", "pts3d_nc_mean", "pts3d_nc_med", "pts3d_chamfer_l1", "pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"],
-            "confidence": ["conf_mean"],
             "track": ["track_conf_mean", "track_vis_ratio"],
             "loss": ["loss", "pose_loss"]
         }
@@ -221,8 +206,6 @@ def plot_category_dashboards(output_dir):
                 matched.extend([k for k in keys if (k.startswith("pose_") or k.startswith("Regr3DPose")) and k not in matched])
             elif cat == "geometry":
                 matched.extend([k for k in keys if (k.startswith("pts3d_") or k.startswith("acc_") or k.startswith("comp_") or k.startswith("nc_") or k.startswith("chamfer_")) and k not in matched])
-            elif cat == "confidence":
-                matched.extend([k for k in keys if "conf" in k and "track" not in k and k not in matched])
             elif cat == "track":
                 matched.extend([k for k in keys if ("track" in k or "vis" in k) and k not in matched])
             elif cat == "loss":
@@ -233,10 +216,7 @@ def plot_category_dashboards(output_dir):
     os.makedirs(outdir, exist_ok=True)
     def collect_series(prefix, keys):
         series = {}
-        epochs = by_prefix.get(prefix, {})
-        if not isinstance(epochs, dict):
-            return series
-        for epoch_key, vals in epochs.items():
+        for epoch_key, vals in obj.items():
             if not (isinstance(epoch_key, str) and epoch_key.startswith("Epoch")):
                 continue
             if not isinstance(vals, dict):
