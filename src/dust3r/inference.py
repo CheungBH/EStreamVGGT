@@ -93,7 +93,15 @@ def loss_of_one_batch(
             with torch.no_grad():
                 output = model.inference(batch, query_pts)
                 preds, batch = output.ress, output.views
-                result = dict(views=batch, pred=preds)
+                if teacher is not None:
+                    knowledge = teacher.inference(batch, query_pts)
+                    gts, batch = knowledge.ress, knowledge.views
+                    with torch.cuda.amp.autocast(enabled=False):
+                        loss = criterion(gts, preds) if criterion is not None else None
+                else:
+                    with torch.cuda.amp.autocast(enabled=False):
+                        loss = criterion(batch, preds) if criterion is not None else None
+                result = dict(views=batch, pred=preds, loss=loss)
                 return result[ret] if ret else result
         else:
             output = model(batch, query_pts)

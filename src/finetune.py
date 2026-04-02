@@ -622,7 +622,15 @@ def save_and_plot_metrics(stats, out_eval, epoch, prefix="eval"):
             consolidated[base] = float(stats[key])
         elif base in stats:
             consolidated[base] = float(stats[base])
-    take("loss"); take("pose_loss")
+    loss_bases = sorted(
+        set(
+            [k[:-4] for k in stats.keys() if k.endswith("_avg") and "loss" in k]
+            + [k[:-4] for k in stats.keys() if k.endswith("_med") and "loss" in k]
+            + [k for k in stats.keys() if "loss" in k and not (k.endswith("_avg") or k.endswith("_med"))]
+        )
+    )
+    for k in loss_bases:
+        take(k)
     for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253"):
         take(k)
     for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
@@ -1057,8 +1065,23 @@ def test_one_epoch(
             inference=True,
         )
 
-        loss_value, loss_details = 0.0, {}
-        metric_logger.update(loss=float(loss_value), **loss_details)
+        loss_out = result.get("loss", None)
+        if loss_out is None:
+            loss_value, loss_details = 0.0, {}
+        else:
+            loss, loss_details = loss_out
+            loss_value = float(loss)
+        scalar_loss_details = {}
+        for name, val in (loss_details or {}).items():
+            if isinstance(val, dict):
+                continue
+            if isinstance(val, torch.Tensor):
+                if val.ndim > 0:
+                    continue
+                scalar_loss_details[name] = float(val.detach().cpu())
+            elif isinstance(val, (int, float, np.number)):
+                scalar_loss_details[name] = float(val)
+        metric_logger.update(loss=float(loss_value), **scalar_loss_details)
 
         if isinstance(batch, list):
             preds = result.get("pred", [])

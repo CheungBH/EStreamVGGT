@@ -209,7 +209,7 @@ def plot_category_dashboards(output_dir):
             elif cat == "track":
                 matched.extend([k for k in keys if ("track" in k or "vis" in k) and k not in matched])
             elif cat == "loss":
-                matched.extend([k for k in keys if (k.endswith("loss_avg") or k.endswith("loss_med") or k.startswith("loss_") or k in ("loss_avg","loss_med","pose_loss_avg","pose_loss_med")) and k not in matched])
+                matched.extend([k for k in keys if ("loss" in k or k in ("total", "total_avg", "total_med")) and k not in matched])
             final_map[cat] = sorted(list(set(matched)))
         return final_map
     outdir = os.path.join(output_dir, "visualize", "metrics_dashboards")
