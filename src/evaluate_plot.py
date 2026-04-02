@@ -3,12 +3,15 @@ import re
 import argparse
 import numpy as np
 import random
-import torch
+import time
 from types import SimpleNamespace
+
+import torch
 from accelerate import Accelerator
 from accelerate.utils import set_seed
+from omegaconf import OmegaConf
 from tqdm import tqdm
-import time
+
 import finetune as ft
 from finetune import VGGT, build_dataset, test_one_epoch
 from vggt.lora import apply_lora_to_aggregator
@@ -25,8 +28,6 @@ def list_checkpoints(folder):
     items.sort(key=lambda x: x[0])
     return items
 
-from omegaconf import OmegaConf
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -34,7 +35,6 @@ def main():
     args = ap.parse_args()
     cfg = OmegaConf.load(args.config)
     folder = os.path.abspath(str(getattr(cfg, "output_dir")))
-    # set seeds and deterministic behavior if requested
     seed = int(getattr(cfg, "seed", 0))
     set_seed(seed, device_specific=False)
     random.seed(seed)
@@ -89,6 +89,7 @@ def main():
     criterion = eval(crit_expr, ft.__dict__).to(device)
     used = set()
     total = len(run_items)
+    prefix = str(getattr(cfg, "prefix", "eval"))
     print(f"[evaluate] total items: {total}")
     for idx, (eidx, path) in enumerate(tqdm(run_items, total=total, desc="Checkpoints", dynamic_ncols=True), start=1):
         t0 = time.time()
@@ -110,10 +111,8 @@ def main():
             sd = {k.replace("module.", "", 1): v for k, v in sd.items()}
         if isinstance(sd, dict) and len(sd) > 0 and next(iter(sd)).startswith("model."):
             sd = {k.replace("model.", "", 1): v for k, v in sd.items()}
-        # inject LoRA if checkpoint contains LoRA weights
         has_lora = any(".lora_A.weight" in k for k in sd.keys())
         if has_lora:
-            # infer r from the first lora_A weight shape; set alpha=r for scaling=1
             for k, v in sd.items():
                 if k.endswith(".lora_A.weight") and hasattr(v, "shape"):
                     r = int(v.shape[0])
@@ -140,7 +139,7 @@ def main():
             int(eidx),
             simple_args,
             log_writer=None,
-            prefix=str(getattr(cfg, "prefix", "eval")),
+            prefix=prefix,
         )
         dt = time.time() - t0
         print(f"[{idx}/{total}] done {os.path.basename(path)} in {dt:.1f}s (load {t1 - t0:.1f}s, eval {dt - (t1 - t0):.1f}s)")

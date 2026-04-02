@@ -410,47 +410,8 @@ def train(args):
                 if test_name not in test_stats:
                     continue
                 stats = test_stats[test_name]
-                consolidated = {}
-                def take(base):
-                    key = base + "_avg"
-                    if key in stats:
-                        consolidated[base] = float(stats[key])
-                    elif base in stats:
-                        consolidated[base] = float(stats[base])
-                take("loss"); take("pose_loss")
-                for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253"):
-                    take(k)
-                for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
-                    take(k)
-                for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"):
-                    take(k)
-                for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
-                    take(k)
-                for pfx in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d"):
-                    vals = [v for k, v in stats.items() if k.startswith(pfx + "/")]
-                    if vals:
-                        consolidated[pfx] = float(np.mean(vals))
                 out_eval = os.path.join(args.output_dir, test_name.replace(" ", "_").replace("/", "_"))
-                os.makedirs(out_eval, exist_ok=True)
-                jpath = os.path.join(out_eval, "metric.json")
-                with open(jpath, "a", encoding="utf-8") as jf:
-                    for name, val in consolidated.items():
-                        jf.write(json.dumps({"epoch": int(epoch), "name": name, "value": val}) + "\n")
-                tpath = os.path.join(out_eval, "metric.txt")
-                order = []
-                order += [k for k in ("loss","pose_loss") if k in consolidated]
-                order += [k for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253") if k in consolidated]
-                order += [k for k in ("pose_rot_deg","pose_trans_err","pose_auc30") if k in consolidated]
-                order += [k for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2") if k in consolidated]
-                order += [k for k in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d") if k in consolidated]
-                order += [k for k in ("conf_mean","track_conf_mean","track_vis_ratio") if k in consolidated]
-                if not os.path.exists(tpath):
-                    with open(tpath, "w", encoding="utf-8") as tf:
-                        tf.write("epoch " + " ".join(order) + "\n")
-                with open(tpath, "a", encoding="utf-8") as tf:
-                    vals = [str(int(epoch))] + [f"{consolidated[k]:.6f}" for k in order]
-                    tf.write(" ".join(vals) + "\n")
-                plot_category_dashboards(out_eval)
+                save_and_plot_metrics(stats, out_eval, epoch, prefix=test_name)
 
     def save_model(epoch, fname, best_so_far, data_iter_step):
         misc.save_model(
@@ -648,6 +609,52 @@ def plot_view_metrics(output_dir, modality, num_views):
 
 def plot_category_dashboards(output_dir):
     return plot.plot_category_dashboards(output_dir)
+
+
+def save_and_plot_metrics(stats, out_eval, epoch, prefix="eval"):
+    import os, json
+    import numpy as np
+    import plot
+    consolidated = {}
+    def take(base):
+        key = base + "_avg"
+        if key in stats:
+            consolidated[base] = float(stats[key])
+        elif base in stats:
+            consolidated[base] = float(stats[base])
+    take("loss"); take("pose_loss")
+    for k in ("depth_absrel","depth_rmse","depth_log_rmse","depth_si_rmse","depth_delta_125","depth_delta_1252","depth_delta_1253"):
+        take(k)
+    for k in ("pose_rot_deg","pose_trans_err","pose_auc30"):
+        take(k)
+    for k in ("pts3d_acc_mean","pts3d_acc_med","pts3d_comp_mean","pts3d_comp_med","pts3d_nc_mean","pts3d_nc_med","pts3d_chamfer_l1","pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"):
+        take(k)
+    for k in ("conf_mean","track_conf_mean","track_vis_ratio"):
+        take(k)
+    for pfx in ("Regr3DPose_pts3d","Regr3DPose_ScaleInv_pts3d"):
+        vals = [v for k, v in stats.items() if k.startswith(pfx + "/")]
+        if vals:
+            consolidated[pfx] = float(np.mean(vals))
+            
+    os.makedirs(out_eval, exist_ok=True)
+    jpath = os.path.join(out_eval, "metric.json")
+    ep_key = f"Epoch{int(epoch)}"
+    obj = {}
+    if os.path.exists(jpath):
+        try:
+            with open(jpath, "r", encoding="utf-8") as rf:
+                obj = json.load(rf)
+        except Exception:
+            obj = {}
+    prefix_obj = obj.get(prefix, {})
+    if not isinstance(prefix_obj, dict):
+        prefix_obj = {}
+    prefix_obj[ep_key] = {name: float(val) for name, val in consolidated.items()}
+    obj[prefix] = prefix_obj
+    with open(jpath, "w", encoding="utf-8") as wf:
+        json.dump(obj, wf, indent=2, ensure_ascii=False)
+    plot_category_dashboards(out_eval)
+
 
 def build_dataset(dataset, batch_size, num_workers, accelerator, test=False, fixed_length=False):
     split = ["Train", "Test"][test]
@@ -1296,46 +1303,24 @@ def test_one_epoch(
         for k, meter in metric_logger.meters.items()
         for tag, attr in aggs
     }
-    # write global metrics to metric.json and metric.txt at root output_dir (include avg/med keys)
     if accelerator.is_main_process and hasattr(args, "output_dir"):
-        out_root = os.path.join(args.output_dir)
-        os.makedirs(out_root, exist_ok=True)
-        mjson = os.path.join(out_root, "metric.json")
+        mjson = os.path.join(args.output_dir, "metric.json")
+        outp_new_json = os.path.join(args.output_dir, "metric_views.json")
         ep_key = f"Epoch{int(epoch)}"
-        obj = {}
+        metrics_obj = {}
         if os.path.exists(mjson):
             try:
                 with open(mjson, "r", encoding="utf-8") as rf:
-                    obj = json.load(rf)
+                    metrics_obj = json.load(rf)
             except Exception:
-                obj = {}
-        obj[ep_key] = {name: float(val) for name, val in results.items()}
+                metrics_obj = {}
+        prefix_metrics = metrics_obj.get(prefix, {})
+        if not isinstance(prefix_metrics, dict):
+            prefix_metrics = {}
+        prefix_metrics[ep_key] = {name: float(val) for name, val in results.items()}
+        metrics_obj[prefix] = prefix_metrics
         with open(mjson, "w", encoding="utf-8") as wf:
-            json.dump(obj, wf, indent=2, ensure_ascii=False)
-        mtxt = os.path.join(out_root, "metric.txt")
-        keys = sorted(list(results.keys()))
-
-        def sel(prefixes):
-            return [k for k in keys if any(k.startswith(p) for p in prefixes)]
-
-        order = []
-        order += sel(["loss", "pose_loss"])
-        order += sel(["depth_"])
-        order += sel(["pose_"])
-        order += sel(["pts3d_", "Regr3DPose_", "acc_", "comp_", "nc_", "chamfer_"])
-        order += sel(["track_conf_mean", "track_vis_ratio", "conf_mean"])
-        if not os.path.exists(mtxt):
-            with open(mtxt, "w", encoding="utf-8") as tf:
-                tf.write("epoch " + " ".join(order) + "\n")
-        with open(mtxt, "a", encoding="utf-8") as tf:
-            vals = [str(int(epoch))] + [f"{float(results[k]):.6f}" for k in order]
-            tf.write(" ".join(vals) + "\n")
-    if accelerator.is_main_process and hasattr(args, "output_dir"):
-        outp = os.path.join(args.output_dir, "metric_view.txt")
-        outp_new_txt = os.path.join(args.output_dir, "metric_views.txt")
-        outp_new_json = os.path.join(args.output_dir, "metric_views.json")
-        line = {"epoch": epoch}
-        view_dict = {}
+            json.dump(metrics_obj, wf, indent=2, ensure_ascii=False)
         metrics = [
             "auc30", "pose_rot_deg", "pose_trans_err",
             "acc_mean", "acc_med",
@@ -1347,24 +1332,15 @@ def test_one_epoch(
             "conf_mean", "track_conf_mean", "track_vis_ratio",
         ]
         num_views = int(getattr(args, "num_test_views", 0) or 0)
-        merged_rows = []
-        merged_headers = ["epoch", "view"] + metrics
-        for m in metrics:
-            for vi in range(num_views):
-                arr = per_view_metrics[m].get(vi, [])
-                if not arr:
-                    raise RuntimeError(f"Missing per-view data for {m} v{vi + 1}")
-                key = f"{m}_v{vi + 1}"
-                view_dict[key] = float(np.mean(arr))
-        line[prefix] = view_dict
-        with open(outp, "a", encoding="utf-8") as f:
-            f.write(json.dumps(line) + "\n")
         ep_key2 = f"epoch{epoch}"
         views_obj = {}
         for vi in range(num_views):
             vm = {}
             for m in metrics:
-                vm[m] = float(np.mean(per_view_metrics[m].get(vi, [])))
+                arr = per_view_metrics[m].get(vi, [])
+                if not arr:
+                    raise RuntimeError(f"Missing per-view data for {m} v{vi + 1}")
+                vm[m] = float(np.mean(arr))
             views_obj[f"view{vi + 1}"] = vm
         mv_obj = {}
         if os.path.exists(outp_new_json):
@@ -1373,17 +1349,13 @@ def test_one_epoch(
                     mv_obj = json.load(rf)
             except Exception:
                 mv_obj = {}
-        mv_obj[ep_key2] = views_obj
+        prefix_views = mv_obj.get(prefix, {})
+        if not isinstance(prefix_views, dict):
+            prefix_views = {}
+        prefix_views[ep_key2] = views_obj
+        mv_obj[prefix] = prefix_views
         with open(outp_new_json, "w", encoding="utf-8") as wf:
             json.dump(mv_obj, wf, indent=2, ensure_ascii=False)
-        if not os.path.exists(outp_new_txt):
-            with open(outp_new_txt, "w", encoding="utf-8") as ft:
-                ft.write(" ".join(merged_headers) + "\n")
-        with open(outp_new_txt, "a", encoding="utf-8") as ft:
-            for vi in range(num_views):
-                row = [str(epoch), str(vi + 1)] + [f"{float(np.mean(per_view_metrics[m].get(vi, []))):.6f}" for m in
-                                                   metrics]
-                ft.write(" ".join(row) + "\n")
 
     if log_writer is not None:
         for name, val in results.items():

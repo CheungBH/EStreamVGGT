@@ -4,28 +4,35 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 def plot_all_metrics(output_dir):
-    mpath = os.path.join(output_dir, "metric.txt")
+    mpath = os.path.join(output_dir, "metric.json")
     if not os.path.exists(mpath):
         return
+    try:
+        with open(mpath, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except Exception:
+        obj = {}
+    if not isinstance(obj, dict):
+        return
     series = {}
-    with open(mpath, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
+    is_flat = any(k.startswith("Epoch") for k in obj.keys())
+    by_prefix = {"eval": obj} if is_flat else obj
+    for prefix, epochs in by_prefix.items():
+        if not isinstance(epochs, dict):
+            continue
+        for epoch_key, metrics in epochs.items():
+            if not (isinstance(epoch_key, str) and epoch_key.startswith("Epoch")):
+                continue
+            if not isinstance(metrics, dict):
                 continue
             try:
-                obj = json.loads(line)
+                epoch = int(epoch_key.replace("Epoch", ""))
             except Exception:
                 continue
-            epoch = obj.get("epoch")
-            for dataset, metrics in obj.items():
-                if dataset == "epoch":
-                    continue
-                if not isinstance(metrics, dict):
-                    continue
-                for k, v in metrics.items():
-                    key = f"{dataset}/{k}"
-                    series.setdefault(key, []).append((epoch, v))
+            for k, v in metrics.items():
+                if isinstance(v, (int, float, np.number)):
+                    key = f"{prefix}/{k}"
+                    series.setdefault(key, []).append((epoch, float(v)))
     outdir = os.path.join(output_dir, "visualize", "metrics")
     os.makedirs(outdir, exist_ok=True)
     for key, pts in series.items():
@@ -46,7 +53,7 @@ def plot_all_metrics(output_dir):
         plt.close()
 
 def plot_view_metrics(output_dir, modality, num_views):
-    mpath = os.path.join(output_dir, "metric_view.txt")
+    mpath = os.path.join(output_dir, "metric_views.json")
     if not os.path.exists(mpath):
         return
     def view_type(v, modality):
@@ -58,53 +65,58 @@ def plot_view_metrics(output_dir, modality, num_views):
             return "RGB" if v == 0 else "event"
         if modality == "rgb_event_loop":
             return "RGB" if (v % 2 == 0) else "event"
+        if modality == "rgb_empty":
+            return "RGB" if v == 0 else "white"
         return "RGB"
     wanted = ["auc30", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "depth_absrel", "depth_delta_125"]
-    data = []
-    with open(mpath, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except Exception:
-                continue
-            data.append(obj)
-    if not data:
+    try:
+        with open(mpath, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except Exception:
+        obj = {}
+    if not isinstance(obj, dict) or not obj:
         return
-    prefixes = []
-    for obj in data:
-        for k in obj.keys():
-            if k != "epoch":
-                prefixes.append(k)
-    prefixes = sorted(list(set(prefixes)))
+    is_flat = any(k.startswith("epoch") for k in obj.keys())
+    by_prefix = {"eval": obj} if is_flat else obj
+    prefixes = sorted([k for k, v in by_prefix.items() if isinstance(v, dict)])
     base = os.path.join(output_dir, "visualize", "metrics_views")
     os.makedirs(base, exist_ok=True)
     for prefix in prefixes:
         series = {}
-        collected_vals = []
-        for obj in data:
-            ep = obj.get("epoch")
-            vals = obj.get(prefix, {})
-            collected_vals.append(vals)
+        epochs = by_prefix.get(prefix, {})
+        if not isinstance(epochs, dict):
+            continue
+        view_ids = set()
+        for epoch_key, views in epochs.items():
+            if not (isinstance(epoch_key, str) and epoch_key.startswith("epoch")):
+                continue
+            if not isinstance(views, dict):
+                continue
+            for view_key in views.keys():
+                if isinstance(view_key, str) and view_key.startswith("view"):
+                    try:
+                        view_ids.add(int(view_key.replace("view", "")))
+                    except Exception:
+                        pass
+        if num_views and num_views > 0:
+            view_range = range(1, num_views + 1)
+        else:
+            vmax = max(view_ids) if view_ids else 0
+            view_range = range(1, vmax + 1)
+        for epoch_key, views in epochs.items():
+            if not (isinstance(epoch_key, str) and epoch_key.startswith("epoch")):
+                continue
+            if not isinstance(views, dict):
+                continue
+            try:
+                ep = int(epoch_key.replace("epoch", ""))
+            except Exception:
+                continue
             for m in wanted:
-                if num_views and num_views > 0:
-                    v_range = range(1, num_views + 1)
-                else:
-                    vs = []
-                    for k in vals.keys():
-                        if k.startswith(m + "_v"):
-                            try:
-                                vs.append(int(k.split("_v")[-1]))
-                            except Exception:
-                                pass
-                    vmax = max(vs) if vs else 0
-                    v_range = range(1, vmax + 1)
-                for v in v_range:
-                    key = f"{m}_v{v}"
-                    val = vals.get(key, None)
-                    if key in vals and isinstance(ep, (int, float)) and isinstance(val, (int, float)):
+                for v in view_range:
+                    vals = views.get(f"view{v}", {})
+                    val = vals.get(m, None) if isinstance(vals, dict) else None
+                    if isinstance(val, (int, float, np.number)):
                         series.setdefault(m, {}).setdefault(v, []).append((ep, float(val)))
         for m in wanted:
             by_view = series.get(m, {})
@@ -164,69 +176,27 @@ def plot_view_metrics(output_dir, modality, num_views):
                 plt.close(fig)
 
 def plot_category_dashboards(output_dir):
-    mpath = os.path.join(output_dir, "metric.txt")
+    mpath = os.path.join(output_dir, "metric.json")
     if not os.path.exists(mpath):
         return
-    data = []
-    with open(mpath, "r", encoding="utf-8") as f:
-        # detect table vs jsonlines
-        first = f.readline()
-        if not first:
-            return
-        first = first.strip()
-        if first.startswith("{"):
-            # JSON lines (legacy)
-            try:
-                obj = json.loads(first)
-                data.append(obj)
-            except Exception:
-                pass
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                data.append(obj)
-        else:
-            # space-separated table: header "epoch metric1 metric2 ..."
-            headers = first.split()
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split()
-                if len(parts) != len(headers):
-                    continue
-                ep = int(parts[0])
-                vals = {headers[i]: float(parts[i]) for i in range(1, len(headers))}
-                data.append({"epoch": ep, "metrics": vals})
-    if not data:
+    try:
+        with open(mpath, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except Exception:
+        obj = {}
+    if not isinstance(obj, dict) or not obj:
         return
-    prefixes = []
-    for obj in data:
-        if "metrics" in obj:
-            prefixes.append("table")
-        else:
-            for k in obj.keys():
-                if k != "epoch":
-                    prefixes.append(k)
-    prefixes = sorted(list(set(prefixes)))
-    # To ensure backward compatibility with older logs, we also build dynamically
+    is_flat = any(k.startswith("Epoch") for k in obj.keys())
+    by_prefix = {"eval": obj} if is_flat else obj
+    prefixes = sorted([k for k, v in by_prefix.items() if isinstance(v, dict)])
     def build_cat_map(prefix):
         keys = set()
-        for obj in data:
-            if "metrics" in obj and prefix == "table":
-                vals = obj.get("metrics", {})
+        epochs = by_prefix.get(prefix, {})
+        if not isinstance(epochs, dict):
+            return {}
+        for vals in epochs.values():
+            if isinstance(vals, dict):
                 keys |= set(vals.keys())
-            else:
-                vals = obj.get(prefix, {})
-                if isinstance(vals, dict):
-                    keys |= set(vals.keys())
-        
-        # Hardcode the static map to guarantee ALL categories are always returned exactly the same way.
         static_map = {
             "depth_error": ["depth_absrel", "depth_delta_125", "depth_rmse", "depth_log_rmse", "depth_si_rmse"],
             "pose": ["pose_rot_deg", "pose_trans_err", "pose_auc30"],
@@ -235,12 +205,8 @@ def plot_category_dashboards(output_dir):
             "track": ["track_conf_mean", "track_vis_ratio"],
             "loss": ["loss", "pose_loss"]
         }
-        
-        # We only return keys that actually exist in the log (keys set), but we use static_map to classify them.
-        # This prevents empty graphs and ensures consistent categorization.
         final_map = {}
         for cat, possible_keys in static_map.items():
-            # Match exact names OR names with _avg / _med to support all legacy/new logs
             matched = []
             for pk in possible_keys:
                 if pk in keys:
@@ -249,8 +215,6 @@ def plot_category_dashboards(output_dir):
                     matched.append(pk + "_avg")
                 elif pk + "_med" in keys:
                     matched.append(pk + "_med")
-            
-            # Also catch any dynamically discovered keys that match the prefix just in case we missed a new metric
             if cat == "depth_error":
                 matched.extend([k for k in keys if k.startswith("depth_") and k not in matched])
             elif cat == "pose":
@@ -263,19 +227,26 @@ def plot_category_dashboards(output_dir):
                 matched.extend([k for k in keys if ("track" in k or "vis" in k) and k not in matched])
             elif cat == "loss":
                 matched.extend([k for k in keys if (k.endswith("loss_avg") or k.endswith("loss_med") or k.startswith("loss_") or k in ("loss_avg","loss_med","pose_loss_avg","pose_loss_med")) and k not in matched])
-            
             final_map[cat] = sorted(list(set(matched)))
-            
         return final_map
     outdir = os.path.join(output_dir, "visualize", "metrics_dashboards")
     os.makedirs(outdir, exist_ok=True)
     def collect_series(prefix, keys):
         series = {}
-        for obj in data:
-            ep = obj.get("epoch")
-            vals = obj.get("metrics", {}) if prefix == "table" else obj.get(prefix, {})
+        epochs = by_prefix.get(prefix, {})
+        if not isinstance(epochs, dict):
+            return series
+        for epoch_key, vals in epochs.items():
+            if not (isinstance(epoch_key, str) and epoch_key.startswith("Epoch")):
+                continue
+            if not isinstance(vals, dict):
+                continue
+            try:
+                ep = int(epoch_key.replace("Epoch", ""))
+            except Exception:
+                continue
             for k in keys:
-                if k in vals and isinstance(ep, (int, float)):
+                if k in vals and isinstance(vals[k], (int, float, np.number)):
                     series.setdefault(k, []).append((ep, float(vals[k])))
         for k in list(series.keys()):
             series[k] = sorted(series[k], key=lambda x: x[0])
