@@ -81,8 +81,8 @@ def loss_of_one_batch(
         assert (
             symmetrize_batch is False
         ), "cannot symmetrize batch with more than 2 views"
-    if symmetrize_batch:
-        batch = make_batch_symmetric(batch)
+    # if symmetrize_batch:
+    #     batch = make_batch_symmetric(batch)
     if "valid_mask" in batch[0]: 
         query_pts = sample_query_points(batch[0]['valid_mask'], M=64).to(device=batch[0]["img"].device)
     else: 

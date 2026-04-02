@@ -67,13 +67,9 @@ def plot_view_metrics(output_dir, modality, num_views):
             return "RGB" if v == 0 else "white"
         return "RGB"
     wanted = ["auc30", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "depth_absrel", "depth_delta_125"]
-    try:
-        with open(mpath, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-    except Exception:
-        obj = {}
-    if not isinstance(obj, dict) or not obj:
-        return
+    with open(mpath, "r", encoding="utf-8") as f:
+        obj = json.load(f)
+
     prefixes = ["eval"]
     base = os.path.join(output_dir, "visualize", "metrics_views")
     os.makedirs(base, exist_ok=True)
@@ -81,30 +77,17 @@ def plot_view_metrics(output_dir, modality, num_views):
         series = {}
         view_ids = set()
         for epoch_key, views in obj.items():
-            if not (isinstance(epoch_key, str) and epoch_key.startswith("epoch")):
-                continue
-            if not isinstance(views, dict):
-                continue
             for view_key in views.keys():
                 if isinstance(view_key, str) and view_key.startswith("view"):
-                    try:
-                        view_ids.add(int(view_key.replace("view", "")))
-                    except Exception:
-                        pass
+                    view_ids.add(int(view_key.replace("view", "")))
+
         if num_views and num_views > 0:
             view_range = range(1, num_views + 1)
         else:
             vmax = max(view_ids) if view_ids else 0
             view_range = range(1, vmax + 1)
         for epoch_key, views in obj.items():
-            if not (isinstance(epoch_key, str) and epoch_key.startswith("epoch")):
-                continue
-            if not isinstance(views, dict):
-                continue
-            try:
-                ep = int(epoch_key.replace("epoch", ""))
-            except Exception:
-                continue
+            ep = int(epoch_key.replace("epoch", ""))
             for m in wanted:
                 for v in view_range:
                     vals = views.get(f"view{v}", {})
@@ -115,7 +98,6 @@ def plot_view_metrics(output_dir, modality, num_views):
             by_view = series.get(m, {})
             views_sorted = sorted(by_view.keys())
             if not views_sorted:
-                # still produce an empty figure with caption
                 plt.figure(figsize=(8, 4))
                 plt.xlabel("epoch")
                 plt.ylabel(m)
@@ -170,15 +152,10 @@ def plot_view_metrics(output_dir, modality, num_views):
 
 def plot_category_dashboards(output_dir):
     mpath = os.path.join(output_dir, "metric.json")
-    if not os.path.exists(mpath):
-        return
-    try:
-        with open(mpath, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-    except Exception:
-        obj = {}
-    if not isinstance(obj, dict) or not obj:
-        return
+
+    with open(mpath, "r", encoding="utf-8") as f:
+        obj = json.load(f)
+
     prefixes = ["eval"]
     def build_cat_map(prefix):
         keys = set()
@@ -188,7 +165,7 @@ def plot_category_dashboards(output_dir):
         static_map = {
             "depth_error": ["depth_absrel", "depth_delta_125", "depth_rmse", "depth_log_rmse", "depth_si_rmse"],
             "pose": ["pose_rot_deg", "pose_trans_err", "pose_auc30"],
-            "geometry": ["pts3d_acc_mean", "pts3d_acc_med", "pts3d_comp_mean", "pts3d_comp_med", "pts3d_nc_mean", "pts3d_nc_med", "pts3d_chamfer_l1", "pts3d_chamfer_l2", "acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"],
+            "geometry": ["acc_mean", "acc_med", "comp_mean", "comp_med", "nc_mean", "nc_med", "chamfer_l1", "chamfer_l2"],
             "track": ["track_conf_mean", "track_vis_ratio"],
             "loss": ["loss", "pose_loss"]
         }
@@ -216,17 +193,11 @@ def plot_category_dashboards(output_dir):
         return final_map
     outdir = os.path.join(output_dir, "visualize", "metrics_dashboards")
     os.makedirs(outdir, exist_ok=True)
+
     def collect_series(prefix, keys):
         series = {}
         for epoch_key, vals in obj.items():
-            if not (isinstance(epoch_key, str) and epoch_key.startswith("Epoch")):
-                continue
-            if not isinstance(vals, dict):
-                continue
-            try:
-                ep = int(epoch_key.replace("Epoch", ""))
-            except Exception:
-                continue
+            ep = int(epoch_key.replace("Epoch", ""))
             for k in keys:
                 if k in vals and isinstance(vals[k], (int, float, np.number)):
                     series.setdefault(k, []).append((ep, float(vals[k])))

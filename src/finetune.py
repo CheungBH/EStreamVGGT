@@ -1033,29 +1033,29 @@ def test_one_epoch(
             metric_logger.log_every(data_loader, args.print_freq, accelerator, header)
     ):
         model_dtype = next(model.parameters()).dtype
-        if not (isinstance(batch, list) and all(isinstance(v, dict) and "img" in v for v in batch)):
-            raise RuntimeError("Expected batch as list[dict] with 'img' keys")
+        # if not (isinstance(batch, list) and all(isinstance(v, dict) and "img" in v for v in batch)):
+        #     raise RuntimeError("Expected batch as list[dict] with 'img' keys")
         for view in batch:
             view["img"] = view["img"].to(device=device, dtype=model_dtype)
             for k in ("camera_pose", "camera_intrinsics", "depthmap"):
-                if k not in view:
-                    raise RuntimeError(f"Expected key '{k}' in view")
+                # if k not in view:
+                #     raise RuntimeError(f"Expected key '{k}' in view")
                 x = view[k]
                 if isinstance(x, np.ndarray):
                     x = torch.from_numpy(x)
                 view[k] = x.to(device=device, dtype=model_dtype)
             if "pts3d" in view:
                 x = view["pts3d"]
-                if isinstance(x, np.ndarray):
-                    x = torch.from_numpy(x)
+                # if isinstance(x, np.ndarray):
+                #     x = torch.from_numpy(x)
                 view["pts3d"] = x.to(device=device, dtype=model_dtype)
             for k in ("valid_mask", "sky_mask", "img_mask", "ray_mask"):
                 if k in view:
-                    x = view[k]
-                    if isinstance(x, np.ndarray):
-                        x = torch.from_numpy(x)
-                    if isinstance(x, torch.Tensor):
-                        view[k] = x.to(device=device, dtype=torch.bool)
+                    # x =
+                    # if isinstance(x, np.ndarray):
+                    #     x = torch.from_numpy(x)
+                    # if isinstance(x, torch.Tensor):
+                    view[k] = view[k].to(device=device, dtype=torch.bool)
         result = loss_of_one_batch(
             batch,
             model,
@@ -1067,16 +1067,12 @@ def test_one_epoch(
             inference=True,
         )
 
-        loss_out = result.get("loss", None)
-        if loss_out is None:
-            loss_value, loss_details = 0.0, {}
-        else:
-            loss, loss_details = loss_out
-            loss_value = float(loss)
+        loss_out = result.get("loss")
+
+        loss, loss_details = loss_out
+        loss_value = float(loss)
         scalar_loss_details = {}
         for name, val in (loss_details or {}).items():
-            if isinstance(val, dict):
-                continue
             if isinstance(val, torch.Tensor):
                 if val.ndim > 0:
                     continue
@@ -1085,236 +1081,235 @@ def test_one_epoch(
                 scalar_loss_details[name] = float(val)
         metric_logger.update(loss=float(loss_value), **scalar_loss_details)
 
-        if isinstance(batch, list):
-            preds = result.get("pred", [])
+        preds = result.get("pred", [])
 
-            # ── 关键修复：预计算第一帧 GT pose 的逆，用于归一化所有帧 ──────────
-            gp0_3x4 = _pose_to_3x4(batch[0]["camera_pose"], device, model_dtype)  # [B,3,4]
-            gp0_4x4 = _to_4x4(gp0_3x4)  # [B,4,4]
-            gp0_inv = torch.linalg.inv(gp0_4x4)  # [B,4,4]
-            # ────────────────────────────────────────────────────────────────────
+        # ── 关键修复：预计算第一帧 GT pose 的逆，用于归一化所有帧 ──────────
+        gp0_3x4 = _pose_to_3x4(batch[0]["camera_pose"], device, model_dtype)  # [B,3,4]
+        gp0_4x4 = _to_4x4(gp0_3x4)  # [B,4,4]
+        gp0_inv = torch.linalg.inv(gp0_4x4)  # [B,4,4]
+        # ────────────────────────────────────────────────────────────────────
 
-            depth_absrels = []
-            depth_rmses = []
-            depth_log_rmses = []
-            depth_si_rmses = []
-            depth_delta_125s = []
-            depth_delta_1252s = []
-            depth_delta_1253s = []
-            pose_rot_degs = []
-            pose_trans_errs = []
-            pts3d_chamfer_l1s = []
-            pts3d_chamfer_l2s = []
-            conf_means = []
-            track_conf_means = []
-            track_vis_ratios = []
-            pose_auc30s = []
-            acc_means = []
-            acc_meds = []
-            comp_means = []
-            comp_meds = []
-            nc_means = []
-            nc_meds = []
-            for vi, view in enumerate(batch):
-                pred_vi = preds[vi]
-                # depth metrics
-                gt_depth = view["depthmap"]
-                m_in = view.get("ray_mask", None)
-                if isinstance(m_in, torch.Tensor):
-                    mask = m_in.bool()
-                else:
-                    mask = torch.as_tensor(m_in).bool()
-                pr_depth = pred_vi["depth"]
-                pd = pr_depth.squeeze(-1)
-                g = gt_depth
+        depth_absrels = []
+        depth_rmses = []
+        depth_log_rmses = []
+        depth_si_rmses = []
+        depth_delta_125s = []
+        depth_delta_1252s = []
+        depth_delta_1253s = []
+        pose_rot_degs = []
+        pose_trans_errs = []
+        pts3d_chamfer_l1s = []
+        pts3d_chamfer_l2s = []
+        conf_means = []
+        track_conf_means = []
+        track_vis_ratios = []
+        pose_auc30s = []
+        acc_means = []
+        acc_meds = []
+        comp_means = []
+        comp_meds = []
+        nc_means = []
+        nc_meds = []
+        for vi, view in enumerate(batch):
+            pred_vi = preds[vi]
+            # depth metrics
+            gt_depth = view["depthmap"]
+            m_in = view.get("ray_mask", None)
+            if isinstance(m_in, torch.Tensor):
+                mask = m_in.bool()
+            else:
+                mask = torch.as_tensor(m_in).bool()
+            pr_depth = pred_vi["depth"]
+            pd = pr_depth.squeeze(-1)
+            g = gt_depth
 
-                # 优先用 valid_mask，其次用 ray_mask，最后才退化到全1
-                if "valid_mask" in view and view["valid_mask"].any():
-                    m = view["valid_mask"].bool()
-                elif isinstance(m_in, torch.Tensor) and m_in.any():
-                    m = mask  # 就是前面读的 ray_mask
-                else:
-                    m = torch.ones_like(g, dtype=torch.bool)
+            # 优先用 valid_mask，其次用 ray_mask，最后才退化到全1
+            if "valid_mask" in view and view["valid_mask"].any():
+                m = view["valid_mask"].bool()
+            elif isinstance(m_in, torch.Tensor) and m_in.any():
+                m = mask  # 就是前面读的 ray_mask
+            else:
+                m = torch.ones_like(g, dtype=torch.bool)
 
-                depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
-                valid = m & (g > depth_min) & (pd > depth_min)
-                if valid.any():
-                    scale = g.masked_select(valid).median() / pd.masked_select(valid).median()
-                    pd = pd * scale
-                    rel = ((pd - g).abs() / g.clamp_min(depth_min)).masked_select(valid).mean().item()
-                    rmse = torch.sqrt(((pd - g).square()).masked_select(valid).mean()).item()
-                    pd_safe = pd.clamp_min(depth_min)
-                    g_safe = g.clamp_min(depth_min)
-                    log_diff = (pd_safe.log() - g_safe.log())
-                    log_rmse = torch.sqrt((log_diff.square()).masked_select(valid).mean()).item()
-                    mu = log_diff.masked_select(valid).mean()
-                    si_rmse = torch.sqrt((((log_diff - mu).square()).masked_select(valid)).mean()).item()
-                    ratio = torch.maximum(pd_safe / g_safe, g_safe / pd_safe)
-                    d125 = ratio.masked_select(valid).lt(1.25).float().mean().item()
-                    d1252 = ratio.masked_select(valid).lt(1.25 ** 2).float().mean().item()
-                    d1253 = ratio.masked_select(valid).lt(1.25 ** 3).float().mean().item()
-                    depth_absrels.append(rel)
-                    depth_rmses.append(rmse)
-                    depth_log_rmses.append(log_rmse)
-                    depth_si_rmses.append(si_rmse)
-                    depth_delta_125s.append(d125)
-                    depth_delta_1252s.append(d1252)
-                    depth_delta_1253s.append(d1253)
-                    _agg("depth_absrel", vi, rel)
-                    _agg("depth_rmse", vi, rmse)
-                    _agg("depth_log_rmse", vi, log_rmse)
-                    _agg("depth_si_rmse", vi, si_rmse)
-                    _agg("depth_delta_125", vi, d125)
-                    _agg("depth_delta_1252", vi, d1252)
-                    _agg("depth_delta_1253", vi, d1253)
+            depth_min = torch.tensor(1e-3, device=g.device, dtype=g.dtype)
+            valid = m & (g > depth_min) & (pd > depth_min)
+            # if valid.any():
+            scale = g.masked_select(valid).median() / pd.masked_select(valid).median()
+            pd = pd * scale
+            rel = ((pd - g).abs() / g.clamp_min(depth_min)).masked_select(valid).mean().item()
+            rmse = torch.sqrt(((pd - g).square()).masked_select(valid).mean()).item()
+            pd_safe = pd.clamp_min(depth_min)
+            g_safe = g.clamp_min(depth_min)
+            log_diff = (pd_safe.log() - g_safe.log())
+            log_rmse = torch.sqrt((log_diff.square()).masked_select(valid).mean()).item()
+            mu = log_diff.masked_select(valid).mean()
+            si_rmse = torch.sqrt((((log_diff - mu).square()).masked_select(valid)).mean()).item()
+            ratio = torch.maximum(pd_safe / g_safe, g_safe / pd_safe)
+            d125 = ratio.masked_select(valid).lt(1.25).float().mean().item()
+            d1252 = ratio.masked_select(valid).lt(1.25 ** 2).float().mean().item()
+            d1253 = ratio.masked_select(valid).lt(1.25 ** 3).float().mean().item()
+            depth_absrels.append(rel)
+            depth_rmses.append(rmse)
+            depth_log_rmses.append(log_rmse)
+            depth_si_rmses.append(si_rmse)
+            depth_delta_125s.append(d125)
+            depth_delta_1252s.append(d1252)
+            depth_delta_1253s.append(d1253)
+            _agg("depth_absrel", vi, rel)
+            _agg("depth_rmse", vi, rmse)
+            _agg("depth_log_rmse", vi, log_rmse)
+            _agg("depth_si_rmse", vi, si_rmse)
+            _agg("depth_delta_125", vi, d125)
+            _agg("depth_delta_1252", vi, d1252)
+            _agg("depth_delta_1253", vi, d1253)
 
-                # ── pose metrics ──────────────────────────────────────────────
-                # GT pose: 归一化到第一帧坐标系（与 loss 里的处理一致）
-                gp_raw = _pose_to_3x4(view["camera_pose"], device, model_dtype)  # [B,3,4]
-                gp_4x4 = _to_4x4(gp_raw)  # [B,4,4]
-                gp_norm_4x4 = gp0_inv @ gp_4x4  # [B,4,4]
-                gp = gp_norm_4x4[:, :3, :]  # [B,3,4]
+            # ── pose metrics ──────────────────────────────────────────────
+            # GT pose: 归一化到第一帧坐标系（与 loss 里的处理一致）
+            gp_raw = _pose_to_3x4(view["camera_pose"], device, model_dtype)  # [B,3,4]
+            gp_4x4 = _to_4x4(gp_raw)  # [B,4,4]
+            gp_norm_4x4 = gp0_inv @ gp_4x4  # [B,4,4]
+            gp = gp_norm_4x4[:, :3, :]  # [B,3,4]
 
-                # Pred pose: 模型输出已经是相对第一帧，直接用
-                pp = _pose_to_3x4(pred_vi["camera_pose"], device, model_dtype)  # [B,3,4]
-                # ─────────────────────────────────────────────────────────────
+            # Pred pose: 模型输出已经是相对第一帧，直接用
+            pp = _pose_to_3x4(pred_vi["camera_pose"], device, model_dtype)  # [B,3,4]
+            # ─────────────────────────────────────────────────────────────
 
-                Rp = pp[:, :3, :3]
-                Rg = gp[:, :3, :3]
-                Rrel = Rp @ Rg.transpose(1, 2)
-                tr = Rrel[:, 0, 0] + Rrel[:, 1, 1] + Rrel[:, 2, 2]
-                val = torch.clamp((tr - 1) / 2, -1.0, 1.0)
-                ang = torch.rad2deg(torch.acos(val)).mean().item()
-                tp = pp[:, :3, 3]
-                tg = gp[:, :3, 3]
-                terr = torch.linalg.norm(tp - tg, dim=1).mean().item()
-                pose_rot_degs.append(ang)
-                pose_trans_errs.append(terr)
-                _agg("pose_rot_deg", vi, ang)
-                _agg("pose_trans_err", vi, terr)
-                ths = torch.linspace(0, 30, steps=31, device=pp.device)
-                auc = (ang <= ths).float().mean().item()
-                pose_auc30s.append(auc)
-                _agg("auc30", vi, auc)
-                # geometry metrics
-                pr = pred_vi["pts3d_in_other_view"]
-                K = view["camera_intrinsics"]
-                gtd = g
-                B, H, W = gtd.shape[:3]
-                fu = K[:, 0, 0]
-                fv = K[:, 1, 1]
-                cu = K[:, 0, 2]
-                cv = K[:, 1, 2]
-                fu_map = fu.view(B, 1, 1).expand(B, H, W)
-                fv_map = fv.view(B, 1, 1).expand(B, H, W)
-                pseudo_focal = torch.stack([fu_map, fv_map], dim=1)
-                pp2 = torch.stack([cu, cv], dim=1)
-                gt_pts = depthmap_to_pts3d(depth=gtd, pseudo_focal=pseudo_focal, pp=pp2)
-                gt_world = geotrf(gp, gt_pts)
-                pr_flat = pr.reshape(pr.shape[0], -1, 3)
-                gt_flat = gt_world.reshape(gt_world.shape[0], -1, 3)
-                m_flat = m.reshape(m.shape[0], -1)
-                pr_sel = pr_flat[m_flat]
-                gt_sel = gt_flat[m_flat]
-                if pr_sel.numel() > 0 and gt_sel.numel() > 0:
-                    pr_sel = pr_sel.view(-1, 3)
-                    gt_sel = gt_sel.view(-1, 3)
-                    pr_f = pr_sel.float()
-                    gt_f = gt_sel.float()
-                    max_points = 10000
-                    if pr_f.shape[0] > max_points:
-                        idx = torch.randperm(pr_f.shape[0], device=pr_f.device)[:max_points]
-                        pr_f = pr_f.index_select(0, idx)
-                    if gt_f.shape[0] > max_points:
-                        idx = torch.randperm(gt_f.shape[0], device=gt_f.device)[:max_points]
-                        gt_f = gt_f.index_select(0, idx)
-                    block = 2048
-                    d_pred_to_gt = torch.full((pr_f.shape[0],), float("inf"), device=pr_f.device)
-                    for j in range(0, gt_f.shape[0], block):
-                        gt_chunk = gt_f[j: j + block]
-                        for i in range(0, pr_f.shape[0], block):
-                            pr_chunk = pr_f[i: i + block]
-                            dist = torch.cdist(pr_chunk.unsqueeze(0), gt_chunk.unsqueeze(0), p=2).squeeze(0)
-                            chunk_min = dist.min(dim=1).values
-                            d_pred_to_gt[i: i + pr_chunk.shape[0]] = torch.minimum(
-                                d_pred_to_gt[i: i + pr_chunk.shape[0]], chunk_min
-                            )
-                    d_gt_to_pred = torch.full((gt_f.shape[0],), float("inf"), device=gt_f.device)
+            Rp = pp[:, :3, :3]
+            Rg = gp[:, :3, :3]
+            Rrel = Rp @ Rg.transpose(1, 2)
+            tr = Rrel[:, 0, 0] + Rrel[:, 1, 1] + Rrel[:, 2, 2]
+            val = torch.clamp((tr - 1) / 2, -1.0, 1.0)
+            ang = torch.rad2deg(torch.acos(val)).mean().item()
+            tp = pp[:, :3, 3]
+            tg = gp[:, :3, 3]
+            terr = torch.linalg.norm(tp - tg, dim=1).mean().item()
+            pose_rot_degs.append(ang)
+            pose_trans_errs.append(terr)
+            _agg("pose_rot_deg", vi, ang)
+            _agg("pose_trans_err", vi, terr)
+            ths = torch.linspace(0, 30, steps=31, device=pp.device)
+            auc = (ang <= ths).float().mean().item()
+            pose_auc30s.append(auc)
+            _agg("auc30", vi, auc)
+            # geometry metrics
+            pr = pred_vi["pts3d_in_other_view"]
+            K = view["camera_intrinsics"]
+            gtd = g
+            B, H, W = gtd.shape[:3]
+            fu = K[:, 0, 0]
+            fv = K[:, 1, 1]
+            cu = K[:, 0, 2]
+            cv = K[:, 1, 2]
+            fu_map = fu.view(B, 1, 1).expand(B, H, W)
+            fv_map = fv.view(B, 1, 1).expand(B, H, W)
+            pseudo_focal = torch.stack([fu_map, fv_map], dim=1)
+            pp2 = torch.stack([cu, cv], dim=1)
+            gt_pts = depthmap_to_pts3d(depth=gtd, pseudo_focal=pseudo_focal, pp=pp2)
+            gt_world = geotrf(gp, gt_pts)
+            pr_flat = pr.reshape(pr.shape[0], -1, 3)
+            gt_flat = gt_world.reshape(gt_world.shape[0], -1, 3)
+            m_flat = m.reshape(m.shape[0], -1)
+            pr_sel = pr_flat[m_flat]
+            gt_sel = gt_flat[m_flat]
+            if pr_sel.numel() > 0 and gt_sel.numel() > 0:
+                pr_sel = pr_sel.view(-1, 3)
+                gt_sel = gt_sel.view(-1, 3)
+                pr_f = pr_sel.float()
+                gt_f = gt_sel.float()
+                max_points = 10000
+                if pr_f.shape[0] > max_points:
+                    idx = torch.randperm(pr_f.shape[0], device=pr_f.device)[:max_points]
+                    pr_f = pr_f.index_select(0, idx)
+                if gt_f.shape[0] > max_points:
+                    idx = torch.randperm(gt_f.shape[0], device=gt_f.device)[:max_points]
+                    gt_f = gt_f.index_select(0, idx)
+                block = 2048
+                d_pred_to_gt = torch.full((pr_f.shape[0],), float("inf"), device=pr_f.device)
+                for j in range(0, gt_f.shape[0], block):
+                    gt_chunk = gt_f[j: j + block]
                     for i in range(0, pr_f.shape[0], block):
                         pr_chunk = pr_f[i: i + block]
-                        for j in range(0, gt_f.shape[0], block):
-                            gt_chunk = gt_f[j: j + block]
-                            dist = torch.cdist(pr_chunk.unsqueeze(0), gt_chunk.unsqueeze(0), p=2).squeeze(0)
-                            chunk_min = dist.min(dim=0).values
-                            d_gt_to_pred[j: j + gt_chunk.shape[0]] = torch.minimum(
-                                d_gt_to_pred[j: j + gt_chunk.shape[0]], chunk_min
-                            )
-                    l1 = d_pred_to_gt.mean().item()
-                    l2 = torch.sqrt(d_pred_to_gt.square().mean()).item()
-                    pts3d_chamfer_l1s.append(l1)
-                    pts3d_chamfer_l2s.append(l2)
-                    acc_means.append(d_pred_to_gt.mean().item())
-                    acc_meds.append(d_pred_to_gt.median().item())
-                    comp_means.append(d_gt_to_pred.mean().item())
-                    comp_meds.append(d_gt_to_pred.median().item())
-                    _agg("acc_mean", vi, d_pred_to_gt.mean().item())
-                    _agg("acc_med", vi, d_pred_to_gt.median().item())
-                    _agg("comp_mean", vi, d_gt_to_pred.mean().item())
-                    _agg("comp_med", vi, d_gt_to_pred.median().item())
-                    _agg("pts3d_chamfer_l1", vi, l1)
-                    _agg("pts3d_chamfer_l2", vi, l2)
-                    pr_grid = pr.reshape(B, H, W, 3)
-                    gt_grid = gt_world.reshape(B, H, W, 3)
-                    dx_pr = pr_grid[:, :, 1:, :] - pr_grid[:, :, :-1, :]
-                    dy_pr = pr_grid[:, 1:, :, :] - pr_grid[:, :-1, :, :]
-                    dx_gt = gt_grid[:, :, 1:, :] - gt_grid[:, :, :-1, :]
-                    dy_gt = gt_grid[:, 1:, :, :] - gt_grid[:, :-1, :, :]
-                    nx_pr = torch.linalg.cross(dx_pr[:, 1:, :, :], dy_pr[:, :, 1:, :], dim=-1)
-                    nx_gt = torch.linalg.cross(dx_gt[:, 1:, :, :], dy_gt[:, :, 1:, :], dim=-1)
-                    n_pr = torch.nn.functional.normalize(nx_pr, dim=-1)
-                    n_gt = torch.nn.functional.normalize(nx_gt, dim=-1)
-                    cos = (n_pr * n_gt).sum(dim=-1).clamp(-1, 1)
-                    cos = cos.reshape(-1)
-                    nc_means.append(cos.mean().item())
-                    nc_meds.append(cos.median().item())
-                    _agg("nc_mean", vi, cos.mean().item())
-                    _agg("nc_med", vi, cos.median().item())
-                pr_conf = pred_vi["conf"]
-                conf_means.append(pr_conf.mean().item())
-                _agg("conf_mean", vi, pr_conf.mean().item())
-                tconf = pred_vi["track_conf"]
-                tvis = pred_vi["vis"]
-                track_conf_means.append(tconf.mean().item())
-                _agg("track_conf_mean", vi, tconf.mean().item())
-                track_vis_ratios.append(tvis.float().mean().item())
-                _agg("track_vis_ratio", vi, tvis.float().mean().item())
+                        dist = torch.cdist(pr_chunk.unsqueeze(0), gt_chunk.unsqueeze(0), p=2).squeeze(0)
+                        chunk_min = dist.min(dim=1).values
+                        d_pred_to_gt[i: i + pr_chunk.shape[0]] = torch.minimum(
+                            d_pred_to_gt[i: i + pr_chunk.shape[0]], chunk_min
+                        )
+                d_gt_to_pred = torch.full((gt_f.shape[0],), float("inf"), device=gt_f.device)
+                for i in range(0, pr_f.shape[0], block):
+                    pr_chunk = pr_f[i: i + block]
+                    for j in range(0, gt_f.shape[0], block):
+                        gt_chunk = gt_f[j: j + block]
+                        dist = torch.cdist(pr_chunk.unsqueeze(0), gt_chunk.unsqueeze(0), p=2).squeeze(0)
+                        chunk_min = dist.min(dim=0).values
+                        d_gt_to_pred[j: j + gt_chunk.shape[0]] = torch.minimum(
+                            d_gt_to_pred[j: j + gt_chunk.shape[0]], chunk_min
+                        )
+                l1 = d_pred_to_gt.mean().item()
+                l2 = torch.sqrt(d_pred_to_gt.square().mean()).item()
+                pts3d_chamfer_l1s.append(l1)
+                pts3d_chamfer_l2s.append(l2)
+                acc_means.append(d_pred_to_gt.mean().item())
+                acc_meds.append(d_pred_to_gt.median().item())
+                comp_means.append(d_gt_to_pred.mean().item())
+                comp_meds.append(d_gt_to_pred.median().item())
+                _agg("acc_mean", vi, d_pred_to_gt.mean().item())
+                _agg("acc_med", vi, d_pred_to_gt.median().item())
+                _agg("comp_mean", vi, d_gt_to_pred.mean().item())
+                _agg("comp_med", vi, d_gt_to_pred.median().item())
+                _agg("pts3d_chamfer_l1", vi, l1)
+                _agg("pts3d_chamfer_l2", vi, l2)
+                pr_grid = pr.reshape(B, H, W, 3)
+                gt_grid = gt_world.reshape(B, H, W, 3)
+                dx_pr = pr_grid[:, :, 1:, :] - pr_grid[:, :, :-1, :]
+                dy_pr = pr_grid[:, 1:, :, :] - pr_grid[:, :-1, :, :]
+                dx_gt = gt_grid[:, :, 1:, :] - gt_grid[:, :, :-1, :]
+                dy_gt = gt_grid[:, 1:, :, :] - gt_grid[:, :-1, :, :]
+                nx_pr = torch.linalg.cross(dx_pr[:, 1:, :, :], dy_pr[:, :, 1:, :], dim=-1)
+                nx_gt = torch.linalg.cross(dx_gt[:, 1:, :, :], dy_gt[:, :, 1:, :], dim=-1)
+                n_pr = torch.nn.functional.normalize(nx_pr, dim=-1)
+                n_gt = torch.nn.functional.normalize(nx_gt, dim=-1)
+                cos = (n_pr * n_gt).sum(dim=-1).clamp(-1, 1)
+                cos = cos.reshape(-1)
+                nc_means.append(cos.mean().item())
+                nc_meds.append(cos.median().item())
+                _agg("nc_mean", vi, cos.mean().item())
+                _agg("nc_med", vi, cos.median().item())
+            pr_conf = pred_vi["conf"]
+            conf_means.append(pr_conf.mean().item())
+            _agg("conf_mean", vi, pr_conf.mean().item())
+            tconf = pred_vi["track_conf"]
+            tvis = pred_vi["vis"]
+            track_conf_means.append(tconf.mean().item())
+            _agg("track_conf_mean", vi, tconf.mean().item())
+            track_vis_ratios.append(tvis.float().mean().item())
+            _agg("track_vis_ratio", vi, tvis.float().mean().item())
 
-            def _avg(xs):
-                return float(np.nanmean(np.array(xs, dtype=np.float32)))
+        def _avg(xs):
+            return float(np.nanmean(np.array(xs, dtype=np.float32)))
 
-            metric_logger.update(
-                depth_absrel=_avg(depth_absrels),
-                depth_rmse=_avg(depth_rmses),
-                depth_log_rmse=_avg(depth_log_rmses),
-                depth_si_rmse=_avg(depth_si_rmses),
-                depth_delta_125=_avg(depth_delta_125s),
-                depth_delta_1252=_avg(depth_delta_1252s),
-                depth_delta_1253=_avg(depth_delta_1253s),
-                pose_rot_deg=_avg(pose_rot_degs),
-                pose_trans_err=_avg(pose_trans_errs),
-                pose_auc30=_avg(pose_auc30s),
-                pts3d_chamfer_l1=_avg(pts3d_chamfer_l1s),
-                pts3d_chamfer_l2=_avg(pts3d_chamfer_l2s),
-                pts3d_acc_mean=_avg(acc_means),
-                pts3d_acc_med=_avg(acc_meds),
-                pts3d_comp_mean=_avg(comp_means),
-                pts3d_comp_med=_avg(comp_meds),
-                pts3d_nc_mean=_avg(nc_means),
-                pts3d_nc_med=_avg(nc_meds),
-                conf_mean=_avg(conf_means),
-                track_conf_mean=_avg(track_conf_means),
-                track_vis_ratio=_avg(track_vis_ratios),
-            )
+        metric_logger.update(
+            depth_absrel=_avg(depth_absrels),
+            depth_rmse=_avg(depth_rmses),
+            depth_log_rmse=_avg(depth_log_rmses),
+            depth_si_rmse=_avg(depth_si_rmses),
+            depth_delta_125=_avg(depth_delta_125s),
+            depth_delta_1252=_avg(depth_delta_1252s),
+            depth_delta_1253=_avg(depth_delta_1253s),
+            pose_rot_deg=_avg(pose_rot_degs),
+            pose_trans_err=_avg(pose_trans_errs),
+            pose_auc30=_avg(pose_auc30s),
+            pts3d_chamfer_l1=_avg(pts3d_chamfer_l1s),
+            pts3d_chamfer_l2=_avg(pts3d_chamfer_l2s),
+            pts3d_acc_mean=_avg(acc_means),
+            pts3d_acc_med=_avg(acc_meds),
+            pts3d_comp_mean=_avg(comp_means),
+            pts3d_comp_med=_avg(comp_meds),
+            pts3d_nc_mean=_avg(nc_means),
+            pts3d_nc_med=_avg(nc_meds),
+            conf_mean=_avg(conf_means),
+            track_conf_mean=_avg(track_conf_means),
+            track_vis_ratio=_avg(track_vis_ratios),
+        )
 
     printer.info("Averaged stats: %s", metric_logger)
 
@@ -1330,11 +1325,8 @@ def test_one_epoch(
         ep_key = f"Epoch{int(epoch)}"
         metrics_obj = {}
         if os.path.exists(mjson):
-            try:
-                with open(mjson, "r", encoding="utf-8") as rf:
-                    metrics_obj = json.load(rf)
-            except Exception:
-                metrics_obj = {}
+            with open(mjson, "r", encoding="utf-8") as rf:
+                metrics_obj = json.load(rf)
         metrics_obj[ep_key] = {name: float(val) for name, val in results.items()}
         with open(mjson, "w", encoding="utf-8") as wf:
             json.dump(metrics_obj, wf, indent=2, ensure_ascii=False)
@@ -1361,11 +1353,8 @@ def test_one_epoch(
             views_obj[f"view{vi + 1}"] = vm
         mv_obj = {}
         if os.path.exists(outp_new_json):
-            try:
-                with open(outp_new_json, "r", encoding="utf-8") as rf:
-                    mv_obj = json.load(rf)
-            except Exception:
-                mv_obj = {}
+            with open(outp_new_json, "r", encoding="utf-8") as rf:
+                mv_obj = json.load(rf)
         mv_obj[ep_key2] = views_obj
         with open(outp_new_json, "w", encoding="utf-8") as wf:
             json.dump(mv_obj, wf, indent=2, ensure_ascii=False)
