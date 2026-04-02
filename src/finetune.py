@@ -1327,7 +1327,7 @@ def test_one_epoch(
     results = {}
     for k, meter in metric_logger.meters.items():
         results[f"{k}_avg"] = getattr(meter, "global_avg")
-        if "loss" not in k:
+        if "loss" not in k and k not in ("Lcamera", "Ldepth", "total"):
             results[f"{k}_med"] = getattr(meter, "median")
     if accelerator.is_main_process and hasattr(args, "output_dir"):
         mjson = os.path.join(args.output_dir, "metric.json")

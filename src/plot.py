@@ -153,7 +153,7 @@ def plot_category_dashboards(output_dir):
                 if cat != "loss" and pk + "_med" in keys:
                     matched.append(pk + "_med")
             if cat == "depth_error":
-                matched.extend([k for k in keys if k.startswith("depth_") and k not in matched])
+                matched.extend([k for k in keys if k.startswith("depth_") and "loss" not in k and k not in matched])
             elif cat == "pose":
                 matched = [k for k in matched if ("/" not in k and "loss" not in k)]
             elif cat == "geometry":
