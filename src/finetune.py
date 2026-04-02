@@ -1087,17 +1087,13 @@ def test_one_epoch(
             if not isinstance(v, (int, float, np.number)):
                 continue
             if k.startswith("Regr3DPose_pts3d/"):
-                try:
-                    vid = int(k.split("/", 1)[1])
-                    regr3d_view_pts[vid] = float(v)
-                except Exception:
-                    pass
+                seg = k.split("/", 1)[1]
+                if seg.isdigit():
+                    regr3d_view_pts[int(seg)] = float(v)
             elif k.startswith("Regr3DPose_ScaleInv_pts3d/"):
-                try:
-                    vid = int(k.split("/", 1)[1])
-                    regr3d_scaleinv_view_pts[vid] = float(v)
-                except Exception:
-                    pass
+                seg = k.split("/", 1)[1]
+                if seg.isdigit():
+                    regr3d_scaleinv_view_pts[int(seg)] = float(v)
 
         # ── 关键修复：预计算第一帧 GT pose 的逆，用于归一化所有帧 ──────────
         gp0_3x4 = _pose_to_3x4(batch[0]["camera_pose"], device, model_dtype)  # [B,3,4]
