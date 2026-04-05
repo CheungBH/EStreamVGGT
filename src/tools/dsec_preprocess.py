@@ -112,6 +112,7 @@ def process_subsequence(args, base_name, sub_name):
         print(f"  从 pose.bag 读取到 {len(pose_dict)} 条 pose")
 
     # ====================== 主循环 ======================
+    begin_t = img_timestamps_us[0]
     for frame_idx, fid in enumerate(tqdm.tqdm(frame_ids, desc=seq_name)):
 
         if frame_idx + 1 < len(img_timestamps_us):
@@ -174,7 +175,8 @@ def process_subsequence(args, base_name, sub_name):
         cv2.imwrite(osp.join(seq_dst, f"{fid}.exr"), depth.astype(np.float32))
 
         # 3. Event
-        mask = (events['t'] >= t_prev_us) & (events['t'] < t_curr_us)
+
+        mask = (events['t'] >= t_prev_us-begin_t) & (events['t'] < t_curr_us-begin_t)
         ev_img = aggregate_events_xy_p(
             events['x'][mask], events['y'][mask], events['p'][mask], H, W)
         cv2.imwrite(osp.join(seq_dst, f"{fid}_event.png"), ev_img)
