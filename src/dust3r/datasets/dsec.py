@@ -75,6 +75,9 @@ class DSEC_Multi(BaseMultiViewDataset):
         self.scene_img_list = scene_img_list
         self.is_video = True
 
+    def __len__(self):
+        return len(self.start_img_ids)
+
     def _read_event_image(self, scene_dir, impath):
         paths = []
         if self.event_dir is not None:
