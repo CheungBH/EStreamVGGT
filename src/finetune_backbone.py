@@ -1,32 +1,28 @@
 import argparse
 import json
-import os
 import random
 import sys
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.data._utils.collate import default_collate
+from torchvision import transforms as T
 from tqdm import tqdm
 
-from dust3r.datasets.dsec import DSEC_Multi
-from dust3r.datasets.eventscape import EventScape_Multi
-from dust3r.utils.image import ImgNorm
 from vggt.lora import LoRALinear, apply_lora_to_aggregator, mark_only_lora_trainable
 from vggt.models.vggt import VGGT
 
 
 def parse_args():
     parser = argparse.ArgumentParser("Backbone LoRA distillation for event encoder")
-    parser.add_argument("--dataset-type", type=str, required=True, choices=["dsec", "eventscape"])
     parser.add_argument(
         "--data-root",
         type=str,
         required=True,
-        help="Dataset root containing train/ and val/ subfolders",
+        help="Dataset root containing train/ and val/ subfolders with paired name.png/name_event.png",
     )
     parser.add_argument("--pretrained", type=str, default=None, help="VGGT checkpoint path")
     parser.add_argument("--output-dir", type=str, required=True, help="Where to save LoRA checkpoints")
@@ -38,15 +34,9 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--log-every", type=int, default=20)
-    parser.add_argument("--num-views", type=int, default=4)
-    parser.add_argument("--resolution", type=int, nargs=2, default=[518, 336], metavar=("W", "H"))
-    parser.add_argument("--max-interval", type=int, default=1)
-    parser.add_argument("--allow-repeat", action="store_true")
-    parser.add_argument("--train-aug-crop", type=int, default=1)
-    parser.add_argument("--val-aug-crop", type=int, default=1)
-    parser.add_argument("--event-dir", type=str, default=None)
     parser.add_argument("--event-suffix", type=str, default="_event")
-    parser.add_argument("--feature-level", type=str, default="last", choices=["last", "all"])
+    parser.add_argument("--image-ext", type=str, default=".png")
+    parser.add_argument("--feature-level", type=str, default="all", choices=["last", "all"])
     parser.add_argument("--normalize-features", action="store_true")
     parser.add_argument("--use-special-tokens", action="store_true")
     parser.add_argument("--lora-r", type=int, default=8)
@@ -71,60 +61,70 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
-def build_single_dataset(args, root: str, modality: str, is_train: bool):
-    dataset_cls = {
-        "dsec": DSEC_Multi,
-        "eventscape": EventScape_Multi,
-    }[args.dataset_type]
-    resolution = [tuple(args.resolution)]
-    aug_crop = args.train_aug_crop if is_train else args.val_aug_crop
-    return dataset_cls(
-        allow_repeat=args.allow_repeat,
-        split=None,
-        ROOT=root,
-        modality=modality,
-        event_dir=args.event_dir,
-        event_suffix=args.event_suffix,
-        max_interval=args.max_interval,
-        aug_crop=aug_crop,
-        resolution=resolution,
-        transform=ImgNorm,
-        num_views=args.num_views,
-        n_corres=0,
+def build_image_transform(img_size: int):
+    return T.Compose(
+        [
+            T.Resize((img_size, img_size), interpolation=T.InterpolationMode.BICUBIC),
+            T.ToTensor(),
+            T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ]
     )
 
 
-class PairedModalityDataset(Dataset):
-    def __init__(self, rgb_dataset, event_dataset):
-        if len(rgb_dataset) != len(event_dataset):
-            raise RuntimeError(f"RGB/Event dataset length mismatch: {len(rgb_dataset)} vs {len(event_dataset)}")
-        self.rgb_dataset = rgb_dataset
-        self.event_dataset = event_dataset
+class PairedImageDataset(Dataset):
+    def __init__(self, root: str, event_suffix: str, image_ext: str, img_size: int):
+        self.root = Path(root)
+        self.event_suffix = event_suffix
+        self.image_ext = image_ext
+        self.transform = build_image_transform(img_size)
+        self.pairs = self._scan_pairs()
+
+    def _scan_pairs(self):
+        if not self.root.exists():
+            raise RuntimeError(f"Dataset folder not found: {self.root}")
+        pairs = []
+        for rgb_path in sorted(self.root.rglob(f"*{self.image_ext}")):
+            if rgb_path.stem.endswith(self.event_suffix):
+                continue
+            event_path = rgb_path.with_name(f"{rgb_path.stem}{self.event_suffix}{rgb_path.suffix}")
+            if event_path.exists():
+                pairs.append((rgb_path, event_path))
+        if not pairs:
+            raise RuntimeError(
+                f"No RGB/event pairs found in {self.root}. "
+                f"Expected files like `name{self.image_ext}` and `name{self.event_suffix}{self.image_ext}`."
+            )
+        return pairs
 
     def __len__(self):
-        return len(self.rgb_dataset)
+        return len(self.pairs)
 
     def __getitem__(self, idx):
-        return self.rgb_dataset[idx], self.event_dataset[idx]
-
-
-def paired_collate(batch):
-    rgb_batch, event_batch = zip(*batch)
-    return default_collate(list(rgb_batch)), default_collate(list(event_batch))
+        rgb_path, event_path = self.pairs[idx]
+        rgb = Image.open(rgb_path).convert("RGB")
+        event = Image.open(event_path).convert("RGB")
+        return {
+            "rgb": self.transform(rgb),
+            "event": self.transform(event),
+            "rgb_path": str(rgb_path),
+            "event_path": str(event_path),
+        }
 
 
 def build_loader(args, root: str, is_train: bool):
-    rgb_dataset = build_single_dataset(args, root=root, modality="rgb", is_train=is_train)
-    event_dataset = build_single_dataset(args, root=root, modality="event", is_train=is_train)
-    pair_dataset = PairedModalityDataset(rgb_dataset, event_dataset)
+    dataset = PairedImageDataset(
+        root=root,
+        event_suffix=args.event_suffix,
+        image_ext=args.image_ext,
+        img_size=args.img_size,
+    )
     return DataLoader(
-        pair_dataset,
+        dataset,
         batch_size=args.batch_size,
         shuffle=is_train,
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=is_train,
-        collate_fn=paired_collate,
     )
 
 
@@ -181,14 +181,9 @@ def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def views_to_images(views, device):
-    images = torch.stack([view["img"] for view in views], dim=0).permute(1, 0, 2, 3, 4).contiguous()
+def extract_backbone_features(model, images, device, use_amp):
+    images = images.to(device=device, non_blocking=True).unsqueeze(1)
     images = (images + 1.0) / 2.0
-    return images.to(device=device, non_blocking=True)
-
-
-def extract_backbone_features(model, views, device, use_amp):
-    images = views_to_images(views, device)
     if device.type == "cuda":
         amp_ctx = torch.amp.autocast("cuda", enabled=use_amp)
     else:
@@ -239,9 +234,9 @@ def evaluate(student, teacher, data_loader, device, args):
     total_loss = 0.0
     total_steps = 0
     with torch.no_grad():
-        for rgb_views, event_views in tqdm(data_loader, desc="Eval", leave=False):
-            teacher_feats, patch_start_idx = extract_backbone_features(teacher, rgb_views, device, args.amp)
-            student_feats, _ = extract_backbone_features(student, event_views, device, args.amp)
+        for batch in tqdm(data_loader, desc="Eval", leave=False):
+            teacher_feats, patch_start_idx = extract_backbone_features(teacher, batch["rgb"], device, args.amp)
+            student_feats, _ = extract_backbone_features(student, batch["event"], device, args.amp)
             loss = compute_feature_loss(student_feats, teacher_feats, patch_start_idx, args)
             total_loss += float(loss.item())
             total_steps += 1
@@ -289,12 +284,12 @@ def main():
         running_loss = 0.0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
-        for step, (rgb_views, event_views) in enumerate(pbar):
+        for step, batch in enumerate(pbar):
             optimizer.zero_grad(set_to_none=True)
 
             with torch.no_grad():
-                teacher_feats, patch_start_idx = extract_backbone_features(teacher, rgb_views, device, args.amp)
-            student_feats, _ = extract_backbone_features(student, event_views, device, args.amp)
+                teacher_feats, patch_start_idx = extract_backbone_features(teacher, batch["rgb"], device, args.amp)
+            student_feats, _ = extract_backbone_features(student, batch["event"], device, args.amp)
 
             loss = compute_feature_loss(student_feats, teacher_feats, patch_start_idx, args)
             loss.backward()
