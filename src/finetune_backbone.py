@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -8,6 +9,8 @@ import numpy as np
 from PIL import Image
 import torch
 import torch.nn.functional as F
+from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs, set_seed as accelerate_set_seed
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms as T
 from tqdm import tqdm
@@ -51,6 +54,7 @@ def parse_args():
     parser.add_argument("--patch-size", type=int, default=14)
     parser.add_argument("--embed-dim", type=int, default=1024)
     parser.add_argument("--amp", action="store_true")
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     return parser.parse_args()
 
 
@@ -83,12 +87,40 @@ class PairedImageDataset(Dataset):
         if not self.root.exists():
             raise RuntimeError(f"Dataset folder not found: {self.root}")
         pairs = []
-        for rgb_path in sorted(self.root.rglob(f"*{self.image_ext}")):
-            if rgb_path.stem.endswith(self.event_suffix):
-                continue
-            event_path = rgb_path.with_name(f"{rgb_path.stem}{self.event_suffix}{rgb_path.suffix}")
-            if event_path.exists():
-                pairs.append((rgb_path, event_path))
+
+        def sort_key(name: str):
+            stem = Path(name).stem
+            if stem.endswith(self.event_suffix):
+                stem = stem[: -len(self.event_suffix)]
+            return (0, int(stem)) if stem.isdigit() else (1, stem)
+
+        with os.scandir(self.root) as seq_iter:
+            seq_entries = sorted(
+                [entry for entry in seq_iter if entry.is_dir()],
+                key=lambda x: x.name,
+            )
+
+        for seq_entry in seq_entries:
+            with os.scandir(seq_entry.path) as file_iter:
+                filenames = [
+                    entry.name
+                    for entry in file_iter
+                    if entry.is_file() and entry.name.endswith(self.image_ext)
+                ]
+            filename_set = set(filenames)
+            for name in sorted(filenames, key=sort_key):
+                stem = Path(name).stem
+                if stem.endswith(self.event_suffix):
+                    continue
+                event_name = f"{stem}{self.event_suffix}{self.image_ext}"
+                if event_name in filename_set:
+                    pairs.append(
+                        (
+                            Path(seq_entry.path) / name,
+                            Path(seq_entry.path) / event_name,
+                        )
+                    )
+
         if not pairs:
             raise RuntimeError(
                 f"No RGB/event pairs found in {self.root}. "
@@ -125,6 +157,8 @@ def build_loader(args, root: str, is_train: bool):
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=is_train,
+        persistent_workers=(args.num_workers > 0),
+        prefetch_factor=(4 if args.num_workers > 0 else None),
     )
 
 
@@ -181,14 +215,10 @@ def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def extract_backbone_features(model, images, device, use_amp):
+def extract_backbone_features(model, images, device, accelerator, use_amp):
     images = images.to(device=device, non_blocking=True).unsqueeze(1)
     images = (images + 1.0) / 2.0
-    if device.type == "cuda":
-        amp_ctx = torch.amp.autocast("cuda", enabled=use_amp)
-    else:
-        amp_ctx = torch.amp.autocast("cpu", enabled=False)
-    with amp_ctx:
+    with accelerator.autocast():
         feats, patch_start_idx = model.aggregator(images)
     return feats, patch_start_idx
 
@@ -212,14 +242,17 @@ def compute_feature_loss(student_feats, teacher_feats, patch_start_idx, args):
     return total / len(pairs)
 
 
-def save_checkpoint(student, optimizer, epoch, step, output_dir, is_best=False):
+def save_checkpoint(student, optimizer, epoch, step, output_dir, accelerator, is_best=False):
+    if not accelerator.is_main_process:
+        return
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    raw_student = accelerator.unwrap_model(student)
     payload = {
         "epoch": epoch,
         "step": step,
-        "lora": lora_state_dict(student),
-        "student_state_dict": student.state_dict(),
+        "lora": lora_state_dict(raw_student),
+        "student_state_dict": raw_student.state_dict(),
         "optimizer": optimizer.state_dict(),
     }
     torch.save(payload, output_dir / f"checkpoint_epoch_{epoch:03d}.pth")
@@ -228,28 +261,38 @@ def save_checkpoint(student, optimizer, epoch, step, output_dir, is_best=False):
     torch.save(payload, output_dir / "checkpoint_last.pth")
 
 
-def evaluate(student, teacher, data_loader, device, args):
+def evaluate(student, teacher, data_loader, device, args, accelerator):
     teacher.eval()
     student.eval()
     total_loss = 0.0
-    total_steps = 0
+    total_weight = 0.0
     with torch.no_grad():
-        for batch in tqdm(data_loader, desc="Eval", leave=False):
-            teacher_feats, patch_start_idx = extract_backbone_features(teacher, batch["rgb"], device, args.amp)
-            student_feats, _ = extract_backbone_features(student, batch["event"], device, args.amp)
+        for batch in tqdm(data_loader, desc="Eval", leave=False, disable=not accelerator.is_local_main_process):
+            teacher_feats, patch_start_idx = extract_backbone_features(teacher, batch["rgb"], device, accelerator, args.amp)
+            student_feats, _ = extract_backbone_features(student, batch["event"], device, accelerator, args.amp)
             loss = compute_feature_loss(student_feats, teacher_feats, patch_start_idx, args)
-            total_loss += float(loss.item())
-            total_steps += 1
-    return total_loss / max(total_steps, 1)
+            local_bs = torch.tensor([batch["rgb"].shape[0]], device=device, dtype=torch.float32)
+            weighted_loss = loss.detach() * local_bs
+            gathered_loss = accelerator.gather_for_metrics(weighted_loss.reshape(1))
+            gathered_bs = accelerator.gather_for_metrics(local_bs)
+            total_loss += float(gathered_loss.sum().item())
+            total_weight += float(gathered_bs.sum().item())
+    return total_loss / max(total_weight, 1.0)
 
 
 def main():
     args = parse_args()
+    accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        mixed_precision=("fp16" if args.amp else "no"),
+        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=False)],
+    )
     set_seed(args.seed)
+    accelerate_set_seed(args.seed, device_specific=True)
     if not args.pretrained:
         raise RuntimeError("Please provide --pretrained")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = accelerator.device
     train_root, val_root = resolve_split_roots(args)
 
     train_loader = build_loader(args, root=train_root, is_train=True)
@@ -262,18 +305,24 @@ def main():
     if not trainable:
         raise RuntimeError("No trainable LoRA parameters found in student model")
     optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
+    student, optimizer, train_loader, eval_loader = accelerator.prepare(
+        student, optimizer, train_loader, eval_loader
+    )
 
     output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with open(output_dir / "cmd.txt", "w", encoding="utf-8") as f:
-        f.write(" ".join(sys.argv) + "\n")
-    with open(output_dir / "args.json", "w", encoding="utf-8") as f:
-        json.dump(vars(args), f, indent=2, ensure_ascii=False)
+    if accelerator.is_main_process:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with open(output_dir / "cmd.txt", "w", encoding="utf-8") as f:
+            f.write(" ".join(sys.argv) + "\n")
+        with open(output_dir / "args.json", "w", encoding="utf-8") as f:
+            json.dump(vars(args), f, indent=2, ensure_ascii=False)
+    accelerator.wait_for_everyone()
 
-    print(f"Teacher params trainable: {count_trainable_parameters(teacher)}")
-    print(f"Student LoRA params trainable: {count_trainable_parameters(student)}")
-    print(f"Train loader batches: {len(train_loader)}")
-    print(f"Eval loader batches: {len(eval_loader)}")
+    accelerator.print(f"Teacher params trainable: {count_trainable_parameters(teacher)}")
+    accelerator.print(f"Student LoRA params trainable: {count_trainable_parameters(accelerator.unwrap_model(student))}")
+    accelerator.print(f"Train loader batches: {len(train_loader)}")
+    accelerator.print(f"Eval loader batches: {len(eval_loader)}")
+    accelerator.print(f"World size: {accelerator.num_processes}")
 
     best_eval = float("inf")
     global_step = 0
@@ -282,33 +331,42 @@ def main():
         teacher.eval()
         student.train()
         running_loss = 0.0
+        running_weight = 0.0
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=not accelerator.is_local_main_process)
+        optimizer.zero_grad(set_to_none=True)
         for step, batch in enumerate(pbar):
-            optimizer.zero_grad(set_to_none=True)
+            with accelerator.accumulate(student):
+                with torch.no_grad():
+                    teacher_feats, patch_start_idx = extract_backbone_features(teacher, batch["rgb"], device, accelerator, args.amp)
+                student_feats, _ = extract_backbone_features(student, batch["event"], device, accelerator, args.amp)
 
-            with torch.no_grad():
-                teacher_feats, patch_start_idx = extract_backbone_features(teacher, batch["rgb"], device, args.amp)
-            student_feats, _ = extract_backbone_features(student, batch["event"], device, args.amp)
-
-            loss = compute_feature_loss(student_feats, teacher_feats, patch_start_idx, args)
-            loss.backward()
-            optimizer.step()
+                loss = compute_feature_loss(student_feats, teacher_feats, patch_start_idx, args)
+                accelerator.backward(loss)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
 
             loss_value = float(loss.item())
-            running_loss += loss_value
+            local_bs = float(batch["rgb"].shape[0])
+            running_loss += loss_value * local_bs
+            running_weight += local_bs
             global_step += 1
 
             if step % args.log_every == 0:
-                pbar.set_postfix(loss=f"{loss_value:.6f}", avg=f"{running_loss / (step + 1):.6f}")
+                pbar.set_postfix(loss=f"{loss_value:.6f}", avg=f"{running_loss / max(running_weight, 1.0):.6f}")
 
-        eval_loss = evaluate(student, teacher, eval_loader, device, args)
+        train_loss_tensor = torch.tensor([running_loss, running_weight], device=device, dtype=torch.float32)
+        train_loss_tensor = accelerator.reduce(train_loss_tensor, reduction="sum")
+        train_loss_avg = float(train_loss_tensor[0].item() / max(train_loss_tensor[1].item(), 1.0))
+
+        eval_loss = evaluate(student, teacher, eval_loader, device, args, accelerator)
         is_best = eval_loss < best_eval
         best_eval = min(best_eval, eval_loss)
-        print(f"[Epoch {epoch}] train_loss={running_loss / max(len(train_loader), 1):.6f} eval_loss={eval_loss:.6f}")
+        accelerator.print(f"[Epoch {epoch}] train_loss={train_loss_avg:.6f} eval_loss={eval_loss:.6f}")
 
         if (epoch + 1) % args.save_every == 0 or is_best:
-            save_checkpoint(student, optimizer, epoch, global_step, output_dir, is_best=is_best)
+            save_checkpoint(student, optimizer, epoch, global_step, output_dir, accelerator, is_best=is_best)
+        accelerator.wait_for_everyone()
 
 
 if __name__ == "__main__":
