@@ -106,17 +106,13 @@ class EventScape_Multi(BaseMultiViewDataset):
         )
         
         # FOR EVENT DATASETS: WE MUST FORCE STRICTLY CONTINUOUS FRAMES!
-        # If max_interval is 1, pos is guaranteed to be [0, 1, 2, ..., num_views-1]
-        # But we explicitly assert/force it here just to be absolutely safe for StreamVGGT
         if self.max_interval == 1:
-            pos = list(range(num_views))
-            
-            # CRITICAL FIX: Ensure start_id + num_views doesn't exceed the scene's available frames
-            if start_id + num_views > len(all_image_ids):
-                # If we are too close to the end, shift the start_id back
-                start_id = len(all_image_ids) - num_views
-                
-            image_idxs = np.array(all_image_ids)[start_id:start_id+num_views]
+            # Convert global start_id to local position within all_image_ids.
+            # all_image_ids = [offset, offset+1, ..., offset+N-1], so local = start_id - offset.
+            local_start = all_image_ids.index(start_id)
+            if local_start + num_views > len(all_image_ids):
+                local_start = len(all_image_ids) - num_views
+            image_idxs = np.array(all_image_ids)[local_start:local_start+num_views]
         else:
             image_idxs = np.array(all_image_ids)[pos]
             
