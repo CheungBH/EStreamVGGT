@@ -48,7 +48,7 @@ class DSEC_Multi(BaseMultiViewDataset):
 
         for scene in scene_dirs:
             scene_dir = osp.join(self.ROOT, scene)
-            frames = sorted([f[:-4] for f in os.listdir(scene_dir) if f.endswith(".png") or f.endswith(".jpg")])
+            frames = sorted([f[:-4] for f in os.listdir(scene_dir) if (f.endswith(".png") or f.endswith(".jpg")) and not f.endswith("_event.png")])
             if not frames:
                 continue
             num_imgs = len(frames)
